@@ -31,6 +31,9 @@ static const uint8_t MC_PUBLIC_PSK[16] = {
     0x8B, 0x33, 0x87, 0xE9, 0xC5, 0xCD, 0xEA, 0x6A,
     0xC9, 0xE5, 0xED, 0xBA, 0xA1, 0x15, 0xCD, 0x72};
 MeshCoreProto meshProto;
+static bool webSendBridge(const uint8_t *data, size_t len);
+#include "web_ui.h"
+MeshWebUI *webUI = nullptr;
 #endif
 
 // LoRa radio object
@@ -321,6 +324,22 @@ void setup()
     meshProto.begin(config.repeater.nodeName);
     meshProto.setChannelPsk(MC_PUBLIC_PSK, sizeof(MC_PUBLIC_PSK));
     Serial.printf("  MeshCore public channel hash: 0x%02X\n", meshProto.channelHash());
+
+    // Web UI needs WiFi, which only comes up as part of the MQTT handler.
+    if (config.wifi.enabled && WiFi.status() == WL_CONNECTED)
+    {
+        webUI = new MeshWebUI(config, meshProto, webSendBridge);
+        if (webUI->begin())
+        {
+            Serial.print(F("✓ MeshCore web UI: http://"));
+            Serial.println(WiFi.localIP());
+            Serial.println(F("  user 'admin', password = admin password (menu 10)"));
+        }
+    }
+    else
+    {
+        Serial.println(F("⚠ Web UI not started: WiFi is not connected."));
+    }
 #endif
 
     Serial.println();
@@ -354,6 +373,10 @@ void loop()
     }
 
     // Check for serial commands
+#ifdef RAK_3112
+    if (webUI) webUI->loop();
+#endif
+
     if (!configMode)
     {
         checkSerialInput();
@@ -954,6 +977,14 @@ bool sendLoRaPacket(const uint8_t *data, size_t length)
         return false;
     }
 }
+
+#ifdef RAK_3112
+// Lets the web UI transmit without knowing anything about the radio layer.
+static bool webSendBridge(const uint8_t *data, size_t len)
+{
+    return sendLoRaPacket(data, len);
+}
+#endif
 
 void checkSerialInput()
 {
