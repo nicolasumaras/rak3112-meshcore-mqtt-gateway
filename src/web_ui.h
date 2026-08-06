@@ -685,6 +685,7 @@ summary::-webkit-details-marker{opacity:.5}
     </fieldset>
 
     <fieldset><legend>MQTT <span class="meta">restart required</span></legend>
+      <div class="warn">WiFi only runs when MQTT is enabled on this firmware. Turning MQTT off also takes down the web UI, syslog and webhooks, and recovery needs a USB cable.</div>
       <div class="row">
         <div><label><input type="checkbox" id="c_mqen" style="width:auto"> Enabled</label></div>
         <div><label>Broker</label><input id="c_mqsrv"></div>
@@ -824,7 +825,7 @@ function fill(c){
   g('c_name').value=c.repeater.nodeName; g('c_hops').value=c.repeater.maxHops;
   g('c_lat').value=c.location.latitude; g('c_lon').value=c.location.longitude;
   g('c_ssid').value=c.wifi.ssid; g('c_wpwset').textContent=c.wifi.hasPassword?'(set)':'(not set)';
-  g('c_mqen').checked=c.mqtt.enabled; g('c_mqsrv').value=c.mqtt.server;
+  g('c_mqen').checked=c.mqtt.enabled; mqttWasEnabled=c.mqtt.enabled; g('c_mqsrv').value=c.mqtt.server;
   g('c_mqport').value=c.mqtt.port; g('c_mqtls').checked=c.mqtt.useTLS;
   g('c_mquser').value=c.mqtt.username; g('c_mqpwset').textContent=c.mqtt.hasPassword?'(set)':'(not set)';
   g('c_mqpfx').value=c.mqtt.basePrefix;
@@ -845,7 +846,7 @@ function fill(c){
   g('whstats').textContent='delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+
                            ' · dropped '+(w.dropped||0)+' · pending '+(w.pending||0);
 }
-let cfgLoaded=false, lastSavedUrl=null, tokenCopied=false;
+let cfgLoaded=false, lastSavedUrl=null, tokenCopied=false, mqttWasEnabled=false;
 g('cfgcard').addEventListener('toggle',async e=>{
   if(!e.target.open){
     if(g('whreveal').style.display!=='none' && !tokenCopied){
@@ -860,6 +861,13 @@ g('cfgcard').addEventListener('toggle',async e=>{
   catch(err){ g('cfgnote').textContent='failed to load' }
 });
 g('cfgsave').onclick=async()=>{
+  // Saving posts the whole form. If it never loaded, every checkbox reads false
+  // and the save would switch off WiFi, MQTT and logging in one click - which is
+  // exactly how this device was taken off the network once.
+  if(!cfgLoaded){
+    g('cfgstatus').textContent='settings have not loaded yet — reopen the panel before saving';
+    return;
+  }
   const body={
     lora:{frequency:parseFloat(g('c_freq').value),bandwidth:parseFloat(g('c_bw').value),
           spreadingFactor:parseInt(g('c_sf').value,10),codingRate:parseInt(g('c_cr').value,10),
@@ -877,6 +885,11 @@ g('cfgsave').onclick=async()=>{
     webhook:{enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
              includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}
   };
+  if(!g('c_mqen').checked && mqttWasEnabled){
+    if(!confirm('Disabling MQTT also stops WiFi on this firmware, which means no web UI, no syslog and no webhooks. You would need a USB cable to undo it.\n\nDisable MQTT anyway?')){
+      g('cfgstatus').textContent='cancelled'; return;
+    }
+  }
   g('cfgstatus').textContent='saving...'; g('cfgsave').disabled=true;
   const err=await post('/api/config',body);
   g('cfgsave').disabled=false;
