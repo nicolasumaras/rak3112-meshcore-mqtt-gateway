@@ -289,6 +289,34 @@ private:
         String input = readLine(prompt, String(defaultValue));
         return input.toInt();
     }
+
+    // Range-checked integer entry. readInt() advertises ranges in its prompt text
+    // but never enforces them, and several callers store into uint8_t - so e.g.
+    // entering 256 for Max Hops truncated to 0 and silently disabled repeating.
+    // Re-prompts instead of clamping, so a typo is never silently reinterpreted.
+    int readIntRange(const char* prompt, int defaultValue, int minValue, int maxValue) {
+        while (true) {
+            String label = String(prompt) + " (" + String(minValue) + "-" + String(maxValue) + ")";
+            String input = readLine(label.c_str(), String(defaultValue));
+            input.trim();
+            if (input.length() == 0) return defaultValue;
+
+            bool numeric = true;
+            size_t start = (input.charAt(0) == '-') ? 1 : 0;
+            if (start >= input.length()) numeric = false;
+            for (size_t i = start; i < input.length(); i++) {
+                if (!isdigit((unsigned char)input.charAt(i))) { numeric = false; break; }
+            }
+
+            if (numeric) {
+                long v = input.toInt();
+                if (v >= minValue && v <= maxValue) return (int)v;
+                Serial.printf("  ⚠ %ld is outside %d-%d, try again.\n", v, minValue, maxValue);
+            } else {
+                Serial.println(F("  ⚠ Not a number, try again."));
+            }
+        }
+    }
     
     float readFloat(const char* prompt, float defaultValue) {
         String input = readLine(prompt, String(defaultValue, 2));
@@ -535,7 +563,10 @@ private:
         config.lora.bandwidth = readFloat("Bandwidth (kHz)", config.lora.bandwidth);
         config.lora.spreadingFactor = readInt("Spreading Factor (7-12)", config.lora.spreadingFactor);
         config.lora.codingRate = readInt("Coding Rate (5-8)", config.lora.codingRate);
-        config.lora.txPower = readInt("TX Power (2-20 dBm)", config.lora.txPower);
+        // Enforce the range this prompt has always advertised but never checked.
+        // Kept at 20 rather than the SX1262's 22 because this path is shared with
+        // the SX127x boards; the RAK_3112 branch clamps to 22 independently.
+        config.lora.txPower = readIntRange("TX Power (dBm)", config.lora.txPower, 2, 20);
         config.lora.syncWord = readHexByte("Sync Word (hex)", config.lora.syncWord);
         config.lora.enableCRC = readBool("Enable CRC (y/n)", config.lora.enableCRC);
         
@@ -555,7 +586,11 @@ private:
         deriveClientIdFromNodeName(config.repeater.nodeName, config.mqtt.clientId, sizeof(config.mqtt.clientId));
         Serial.printf("✓ MQTT Client ID updated to: %s\n", config.mqtt.clientId);
         
-        config.repeater.maxHops = readInt("Max Hops (1-7)", config.repeater.maxHops);
+        // Honest range: path hash count is 6 bits, so 63 entries is the hard
+        // ceiling (MAX_PATH_SIZE / hash size). 0 disables retransmission.
+        Serial.println(F("  Max Hops: how many repeaters a packet may already have"));
+        Serial.println(F("  passed through and still be repeated. 0 = repeating off."));
+        config.repeater.maxHops = (uint8_t)readIntRange("Max Hops", config.repeater.maxHops, 0, 63);
         config.repeater.autoAck = readBool("Auto ACK (y/n)", config.repeater.autoAck);
         config.repeater.broadcastEnabled = readBool("Broadcast Enabled (y/n)", config.repeater.broadcastEnabled);
         config.repeater.routeTimeout = readInt("Route Timeout (seconds)", config.repeater.routeTimeout);
