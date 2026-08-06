@@ -90,6 +90,12 @@ public:
         prefs.putFloat("loc_lon", config.location.longitude);
 
         // Clock
+        prefs.putString("log_srv", config.log.server);
+        prefs.putUShort("log_port", config.log.port);
+        prefs.putBool("log_en", config.log.enabled);
+        prefs.putUChar("log_lvl", config.log.minLevel);
+        prefs.putUShort("log_hb", config.log.heartbeatSec);
+
         prefs.putString("clk_ntp", config.clock.ntpServer);
         prefs.putShort("clk_tz", config.clock.timezoneMinutes);
         prefs.putBool("clk_auto", config.clock.autoSync);
@@ -228,6 +234,13 @@ public:
         config.location.longitude = prefs.getFloat("loc_lon", 0.0f);
 
         // Clock
+        strncpy(config.log.server, prefs.getString("log_srv", "").c_str(), sizeof(config.log.server) - 1);
+        config.log.server[sizeof(config.log.server) - 1] = '\0';
+        config.log.port = prefs.getUShort("log_port", 514);
+        config.log.enabled = prefs.getBool("log_en", false);
+        config.log.minLevel = prefs.getUChar("log_lvl", 1);
+        config.log.heartbeatSec = prefs.getUShort("log_hb", 300);
+
         strncpy(config.clock.ntpServer, prefs.getString("clk_ntp", "pool.ntp.org").c_str(), sizeof(config.clock.ntpServer) - 1);
         config.clock.ntpServer[sizeof(config.clock.ntpServer) - 1] = '\0';
         config.clock.timezoneMinutes = prefs.getShort("clk_tz", 0);

@@ -24,6 +24,7 @@
 #include "settings_manager.h"
 #include "mqtt_handler.h"
 #include "serial_config.h"
+#include "syslog_client.h"
 #ifdef RAK_3112
 #include "meshcore_proto.h"
 // MeshCore's default "Public" channel PSK, base64 izOH6cXN6mrJ5e26oRXNcg==
@@ -78,6 +79,8 @@ GatewayConfig config;
 SettingsManager settingsManager;
 MQTTHandler *mqttHandler = nullptr;
 ConfigMenu *serialConfig = nullptr;
+SyslogClient *sysLog = nullptr;
+unsigned long lastHeartbeat = 0;
 
 // Statistics
 uint32_t packetsReceived = 0;
@@ -318,6 +321,17 @@ void setup()
     serialConfig->setOnExitCallback(exitConfigMode);
     serialConfig->begin();
 
+    // Remote syslog, if an operator configured a collector.
+    sysLog = new SyslogClient(config);
+    sysLog->begin();
+    if (sysLog->isReady())
+    {
+        Serial.printf("✓ Remote logging -> %s:%u\n", config.log.server, config.log.port);
+        sysLog->logf(LOG_INFO, "boot fw=%s node=0x%08X freq=%.3f sf=%u cr=%u bw=%.1f",
+                     FIRMWARE_VERSION, config.repeater.nodeId, config.lora.frequency,
+                     config.lora.spreadingFactor, config.lora.codingRate, config.lora.bandwidth);
+    }
+
 #ifdef RAK_3112
     // MeshCore identity + public channel. The keypair is generated once and
     // persisted, so the node keeps a stable identity across reboots.
@@ -389,6 +403,18 @@ void loop()
 
     // Publish statistics periodically
     unsigned long now = millis();
+    if (sysLog && sysLog->isReady() && config.log.heartbeatSec > 0 &&
+        now - lastHeartbeat > (unsigned long)config.log.heartbeatSec * 1000UL)
+    {
+        lastHeartbeat = now;
+#ifdef RAK_3112
+        sysLog->heartbeat(packetsReceived, packetsSent, packetsForwarded, packetsFailed,
+                          meshProto.contactCount);
+#else
+        sysLog->heartbeat(packetsReceived, packetsSent, packetsForwarded, packetsFailed, 0);
+#endif
+    }
+
     if (!configMode && mqttHandler && mqttHandler->isConnected() && now - lastStatsPublish > 60000)
     {
         publishStats();
@@ -534,6 +560,7 @@ void setupLoRa()
         }
         else
         {
+            if (sysLog) sysLog->logf(LOG_ERROR, "startReceive failed code=%d", state);
             Serial.print(F("✗ Failed to start receive, code: "));
             Serial.println(state);
         }
@@ -646,6 +673,8 @@ void handleLoRaPacket(uint8_t *data, size_t length, int rssi, float snr)
 {
     // Log to serial
     Serial.printf("\n📡 LoRa RX: %d bytes | RSSI: %d dBm | SNR: %.1f dB\n", length, rssi, snr);
+    if (sysLog) sysLog->logf(LOG_DEBUG, "rx bytes=%u rssi=%d snr=%.1f type=0x%02X",
+                             (unsigned)length, rssi, snr, length ? data[0] : 0);
 
 #ifdef RAK_3112
     // Decode as MeshCore: records contacts from adverts and decrypts messages
@@ -970,6 +999,7 @@ bool sendLoRaPacket(const uint8_t *data, size_t length)
     else
     {
         packetsFailed++;
+        if (sysLog) sysLog->logf(LOG_ERROR, "tx failed code=%d len=%u", state, (unsigned)length);
         Serial.print("   ✗ Failed, code: ");
         Serial.println(state);
 

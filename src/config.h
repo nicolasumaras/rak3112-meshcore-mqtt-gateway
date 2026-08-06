@@ -189,6 +189,16 @@ struct LocationConfig {
     float longitude;  // degrees
 };
 
+// Remote syslog. Disabled with an empty server so the firmware never emits
+// traffic to an address the operator did not configure.
+struct LogConfig {
+    char server[64];
+    uint16_t port;
+    bool enabled;
+    uint8_t minLevel;        // 0=debug 1=info 2=warn 3=error
+    uint16_t heartbeatSec;   // periodic heap/counter line; 0 disables
+};
+
 struct ClockConfig {
     char ntpServer[64];
     int16_t timezoneMinutes; // minutes offset from UTC
@@ -217,6 +227,7 @@ struct GatewayConfig {
     DiscoveryConfig discovery;
     LocationConfig location;
     ClockConfig clock;
+    LogConfig log;
 };
 
 // Derive a safe MQTT Client ID from the repeater node name
@@ -342,6 +353,12 @@ inline GatewayConfig getDefaultConfig() {
     config.location.longitude = 0.0f;
 
     // Clock defaults
+    config.log.server[0] = '\0';   // off until an operator sets a host
+    config.log.port = 514;
+    config.log.enabled = false;
+    config.log.minLevel = 1;       // info
+    config.log.heartbeatSec = 300; // 5 min
+
     strncpy(config.clock.ntpServer, "pool.ntp.org", sizeof(config.clock.ntpServer));
     config.clock.timezoneMinutes = 0; // UTC
     config.clock.autoSync = true;

@@ -144,6 +144,7 @@ public:
                 case 13: configureClock(); break;
                 case 14: showNeighbours(); break;
                 case 15: showTelemetry(); break;
+                case 16: configureLogging(); break;
                 case 0:
                     exitConfig();
                     if (onExitCallback) onExitCallback();
@@ -509,6 +510,32 @@ private:
         Serial.println(F("✓ Discovery configuration updated"));
     }
 
+    void configureLogging() {
+        Serial.println(F("\n┌── Remote Logging (syslog) ─────────────────────────────┐"));
+        Serial.println(F("  Streams log lines to a syslog collector over UDP."));
+        Serial.println(F("  Leave the server empty to disable."));
+
+        String srv = readLine("Log server (host or IP)", String(config.log.server));
+        strncpy(config.log.server, srv.c_str(), sizeof(config.log.server) - 1);
+        config.log.server[sizeof(config.log.server) - 1] = '\0';
+
+        if (config.log.server[0] != '\0') {
+            config.log.port = (uint16_t)readIntRange("Port", config.log.port ? config.log.port : 514, 1, 65535);
+            Serial.println(F("  Level: 0=debug 1=info 2=warn 3=error"));
+            config.log.minLevel = (uint8_t)readIntRange("Minimum level", config.log.minLevel, 0, 3);
+            Serial.println(F("  Heartbeat carries heap/fragmentation/counters. 0 disables."));
+            config.log.heartbeatSec = (uint16_t)readIntRange("Heartbeat seconds", config.log.heartbeatSec, 0, 3600);
+            config.log.enabled = readBool("Enable logging (y/n)", true);
+        } else {
+            config.log.enabled = false;
+            Serial.println(F("  (no server set - logging disabled)"));
+        }
+
+        Serial.println(F("└────────────────────────────────────────────────────────┘"));
+        Serial.println(F("✓ Logging configuration updated"));
+        Serial.println(F("⚠ Restart required for logging changes to take effect"));
+    }
+
     void configureLocation() {
         Serial.println(F("\n┌── Location Configuration ───────────────────────────────┐"));
         config.location.latitude = readFloat("Latitude (-90..90)", config.location.latitude);
@@ -661,6 +688,13 @@ private:
         Serial.printf("║   Latitude: %-43.6f ║\n", config.location.latitude);
         Serial.printf("║   Longitude: %-42.6f ║\n", config.location.longitude);
         // Clock
+        Serial.println(F("╠════════════════════════════════════════════════════════╣"));
+        Serial.println(F("║ Remote Logging:                                        ║"));
+        Serial.printf("║   Enabled: %-43s ║\n", config.log.enabled ? "Yes" : "No");
+        Serial.printf("║   Server: %-44s ║\n", config.log.server[0] ? config.log.server : "(none)");
+        Serial.printf("║   Port: %-48d║\n", config.log.port);
+        Serial.printf("║   Min level: %-42d ║\n", config.log.minLevel);
+        Serial.printf("║   Heartbeat: %-38d s ║\n", config.log.heartbeatSec);
         Serial.println(F("╠════════════════════════════════════════════════════════╣"));
         Serial.println(F("║ Clock / NTP:                                           ║"));
         Serial.printf("║   NTP Server: %-42s ║\n", config.clock.ntpServer);
