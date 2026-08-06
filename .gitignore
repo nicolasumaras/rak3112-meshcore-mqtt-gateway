@@ -1,0 +1,27 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Editors / IDE
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.code-workspace
+
+# Secrets — WiFi/MQTT credentials must never be committed
+secrets.h
+config_local.h
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build / logs
+*.bin
+*.elf
+*.map
+serial-*.log
