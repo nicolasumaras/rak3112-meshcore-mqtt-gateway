@@ -89,8 +89,49 @@ static NeighborInfo neighbors[16];
 static size_t neighborCount = 0;
 static unsigned long lastAdvertSent = 0;
 
+// ---------------------------------------------------------------------------
+// MeshCore wire format (see meshcore-dev/MeshCore src/Packet.h, src/Packet.cpp)
+//
+//   [header:1][transport_codes:4 only if TRANSPORT_*][path_len:1][path:N][payload:rest]
+//
+//   header  bits 0-1 route type, bits 2-5 payload type, bits 6-7 version
+//   path_len  ((hash_size - 1) << 6) | hash_count
+// ---------------------------------------------------------------------------
+#define MC_ROUTE_MASK             0x03
+#define MC_ROUTE_TRANSPORT_FLOOD  0x00
+#define MC_ROUTE_FLOOD            0x01
+#define MC_ROUTE_DIRECT           0x02
+#define MC_ROUTE_TRANSPORT_DIRECT 0x03
+#define MC_MAX_PATH_SIZE          64
+#define MC_HDR_DO_NOT_RETRANSMIT  0xFF
+
+static inline uint8_t mcRouteType(uint8_t header) { return header & MC_ROUTE_MASK; }
+static inline uint8_t mcPayloadType(uint8_t header) { return (header >> 2) & 0x0F; }
+static inline bool mcIsFlood(uint8_t header)
+{
+    uint8_t r = mcRouteType(header);
+    return r == MC_ROUTE_FLOOD || r == MC_ROUTE_TRANSPORT_FLOOD;
+}
+static inline bool mcHasTransportCodes(uint8_t header)
+{
+    uint8_t r = mcRouteType(header);
+    return r == MC_ROUTE_TRANSPORT_FLOOD || r == MC_ROUTE_TRANSPORT_DIRECT;
+}
+static inline uint8_t mcPathHashSize(uint8_t path_len) { return (path_len >> 6) + 1; }
+static inline uint8_t mcPathHashCount(uint8_t path_len) { return path_len & 63; }
+static inline bool mcIsValidPathLen(uint8_t path_len)
+{
+    uint8_t sz = mcPathHashSize(path_len);
+    if (sz == 4) return false; // reserved
+    return (uint16_t)mcPathHashCount(path_len) * sz <= MC_MAX_PATH_SIZE;
+}
+
+// How long a payload stays suppressed. Must comfortably exceed the time for a
+// flood to traverse the mesh and come back, or the packet storm returns.
+#define MC_DEDUP_WINDOW_MS 60000UL
+
 // Simple recent-packet deduplication to prevent rapid re-repeat loops
-static const size_t RECENT_PACKET_SLOTS = 8;
+static const size_t RECENT_PACKET_SLOTS = 16;
 struct RecentPacketEntry
 {
     uint32_t hash;
@@ -146,6 +187,7 @@ void setupLoRa();
 void handleLoRaReceive();
 void handleLoRaPacket(uint8_t *data, size_t length, int rssi, float snr);
 bool sendLoRaPacket(const uint8_t *data, size_t length);
+void meshcoreFloodRepeat(const uint8_t *data, size_t length);
 void checkSerialInput();
 void publishStats();
 void publishNeighbours();
@@ -720,28 +762,132 @@ void handleLoRaPacket(uint8_t *data, size_t length, int rssi, float snr)
         packetsForwarded++;
     }
 
-    // Optional: Repeat packet if configured as repeater
-    // This is a simple repeater - just retransmit what we receive
-    // In a real mesh implementation, you'd check hop count, routing, etc.
+    // MeshCore-aware flood repeat. maxHops == 0 disables retransmission entirely.
     if (config.repeater.maxHops > 0 && length > 0)
     {
-        unsigned long nowMs = millis();
-        uint32_t h = fnv1aHash32(data, length);
-        if (!wasPacketSeenRecently(h, nowMs, 2000UL))
-        {
-            // Simple delay to avoid collisions
-            delay(random(100, 300));
-            // Retransmit
-            if (sendLoRaPacket(data, length))
-            {
-                Serial.println("   ↻ Packet repeated");
-                rememberPacket(h, millis());
-            }
-        }
-        else
-        {
-            Serial.println("   ↻ Skipped repeat (duplicate seen recently)");
-        }
+        meshcoreFloodRepeat(data, length);
+    }
+}
+
+// Retransmit a MeshCore FLOOD packet the way a real MeshCore repeater does:
+// append this node's path hash and increment the hash count, so that downstream
+// nodes can detect loops and so the originator learns a return path.
+//
+// Mirrors mesh::Mesh::routeRecvPacket() in meshcore-dev/MeshCore (src/Mesh.cpp).
+//
+// Deliberately limited to FLOOD packets. DIRECT routing requires us to match our
+// own identity hash against path[0] and shuffle the path, which in turn requires
+// a real MeshCore Identity keypair that this firmware does not have. Forwarding
+// DIRECT packets without that would corrupt routing, so we leave them alone.
+void meshcoreFloodRepeat(const uint8_t *data, size_t length)
+{
+    uint8_t header = data[0];
+
+    if (header == MC_HDR_DO_NOT_RETRANSMIT)
+    {
+        Serial.println(F("   ↻ Not repeated (marked do-not-retransmit)"));
+        return;
+    }
+    if (!mcIsFlood(header))
+    {
+        Serial.printf("   ↻ Not repeated (route type %u is not FLOOD)\n", mcRouteType(header));
+        return;
+    }
+
+    size_t off = 1;
+    if (mcHasTransportCodes(header)) off += 4;
+    if (length < off + 1)
+    {
+        Serial.println(F("   ↻ Not repeated (packet too short for header)"));
+        return;
+    }
+
+    uint8_t pathLen = data[off];
+    if (!mcIsValidPathLen(pathLen))
+    {
+        Serial.println(F("   ↻ Not repeated (invalid path_len encoding)"));
+        return;
+    }
+
+    uint8_t hashSize = mcPathHashSize(pathLen);
+    uint8_t hashCount = mcPathHashCount(pathLen);
+    size_t pathBytes = (size_t)hashCount * hashSize;
+    size_t payloadStart = off + 1 + pathBytes;
+    if (payloadStart >= length)
+    {
+        Serial.println(F("   ↻ Not repeated (no payload)"));
+        return;
+    }
+
+    // Honour the configured hop limit.
+    if (hashCount >= config.repeater.maxHops)
+    {
+        Serial.printf("   ↻ Not repeated (hop limit reached: %u/%u)\n", hashCount, config.repeater.maxHops);
+        return;
+    }
+    if ((size_t)(hashCount + 1) * hashSize > MC_MAX_PATH_SIZE)
+    {
+        Serial.println(F("   ↻ Not repeated (path full)"));
+        return;
+    }
+
+    // Deduplicate on payload type + payload only, never on the path. MeshCore
+    // does the same (Packet::calculatePacketHash), because the path changes at
+    // every hop - hashing the whole frame would make each re-flood look new and
+    // defeat loop suppression entirely.
+    const uint8_t *payload = data + payloadStart;
+    size_t payloadLen = length - payloadStart;
+    uint8_t ptype = mcPayloadType(header);
+    uint32_t h = fnv1aHash32(&ptype, 1);
+    h ^= fnv1aHash32(payload, payloadLen);
+
+    unsigned long nowMs = millis();
+    if (wasPacketSeenRecently(h, nowMs, MC_DEDUP_WINDOW_MS))
+    {
+        Serial.println(F("   ↻ Skipped repeat (already seen this payload)"));
+        return;
+    }
+
+    // Rebuild the frame with our hash appended to the path.
+    uint8_t out[256];
+    size_t o = 0;
+    out[o++] = header;
+    if (mcHasTransportCodes(header))
+    {
+        memcpy(&out[o], &data[1], 4);
+        o += 4;
+    }
+    out[o++] = (uint8_t)(((hashSize - 1) << 6) | (hashCount + 1));
+    memcpy(&out[o], &data[off + 1], pathBytes);
+    o += pathBytes;
+
+    // Our path hash. A real MeshCore node uses its Identity public-key hash; we
+    // have no keypair, so derive a stable value from the node ID. That is enough
+    // for loop bounding and breadcrumbs, but see the DIRECT caveat above.
+    for (uint8_t i = 0; i < hashSize; ++i)
+    {
+        out[o++] = (uint8_t)((config.repeater.nodeId >> (8 * (i % 4))) & 0xFF);
+    }
+
+    if (o + payloadLen > sizeof(out))
+    {
+        Serial.println(F("   ↻ Not repeated (would exceed MTU)"));
+        return;
+    }
+    memcpy(&out[o], payload, payloadLen);
+    o += payloadLen;
+
+    // Randomised backoff, lower priority the further the packet has travelled.
+    // MeshCore scales this by airtime; a bounded random delay is enough here.
+    delay(random(120, 400) * (hashCount + 1));
+
+    // NB: not counted in packetsForwarded - that counter already means
+    // "forwarded to MQTT". Repeats show up in packetsSent.
+    if (sendLoRaPacket(out, o))
+    {
+        rememberPacket(h, millis());
+        Serial.printf("   ↻ Repeated as FLOOD (path %u -> %u, %u bytes)\n",
+                      hashCount, hashCount + 1, (unsigned)o);
     }
 }
 
