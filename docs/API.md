@@ -88,9 +88,11 @@ curl $AUTH -X POST "$GW/api/advert"
 
 ---
 
-## Webhook
+## Webhooks
 
-Registers a URL that receives a POST for every decoded inbound message.
+Up to **4 endpoints**, each receiving its own copy of every decoded inbound
+message, with its own token, its own public/direct filters and its own delivery
+counters. A broken endpoint cannot mask or hold up a working one.
 
 > Also editable from the **Settings → Webhook** panel in the web UI, including a
 > "Send test delivery" button and live delivery counters. The API below is for
@@ -119,32 +121,52 @@ fail with no clue why. Same rule for the WiFi and MQTT passwords (63 characters)
 
 Stored in NVS, so it survives reboots and reflashes.
 
-### `GET /api/webhook`
+### `GET /api/webhooks`
 
 ```json
-{"enabled":true,"url":"https://example.com/hook","hasToken":true,
- "includePublic":true,"includeDirect":true,
- "delivered":12,"failed":0,"dropped":0,"pending":0}
+{"webhooks":[
+   {"id":0,"enabled":true,"url":"https://example.com/hook","hasToken":true,
+    "tokenLength":64,"tokenFingerprint":"51b2bf5b",
+    "includePublic":true,"includeDirect":true,"delivered":12,"failed":0},
+   {"id":1,"enabled":false,"url":"","hasToken":false,"tokenLength":0,
+    "tokenFingerprint":"-","includePublic":true,"includeDirect":true,
+    "delivered":0,"failed":0}
+ ],
+ "dropped":0,"pending":0,"max":4}
+```
+
+`tokenFingerprint` is the first 4 bytes of `SHA256(token)`. Compare it against
+your receiver to confirm both sides hold the same secret, without the token ever
+becoming readable:
+
+```bash
+printf '%s' "$YOUR_TOKEN" | shasum -a 256 | cut -c1-8
 ```
 
 The token itself is never returned — only whether one is set.
 
-### `POST /api/webhook`
+### `POST /api/webhooks`
 
 ```bash
-curl $AUTH -X POST "$GW/api/webhook" \
+curl $AUTH -X POST "$GW/api/webhooks" \
      -H 'Content-Type: application/json' \
-     -d '{"url":"https://example.com/hook","token":"s3cret",
-          "enabled":true,"includePublic":true,"includeDirect":true}'
+     -d '{"webhooks":[{"id":0,"url":"https://example.com/hook","token":"s3cret",
+                       "enabled":true,"includePublic":true,"includeDirect":true}]}'
 ```
 
-An empty or omitted `token` leaves the stored one unchanged. Clearing `url`
-disables the webhook. Settings persist across reboots.
+Only the ids present are touched, so a partial update cannot blank the others.
+An empty or omitted `token` leaves the stored one unchanged; `"clearToken":true`
+removes it. Clearing `url` disables that endpoint. All of it persists in NVS.
 
-### `POST /api/webhook/test`
+### `POST /api/webhooks/test?id=N`
 
-Sends a synthetic delivery immediately so you can verify the endpoint without
-waiting for mesh traffic. Returns `502` if the endpoint did not return 2xx.
+Sends a synthetic delivery to endpoint `id` (default 0) so you can verify it
+without waiting for mesh traffic. Returns `502` with the reason if it did not
+return 2xx.
+
+```bash
+curl $AUTH -X POST "$GW/api/webhooks/test?id=1"
+```
 
 ### Delivery format
 
@@ -176,7 +198,9 @@ Authorization: Bearer <token>      (only if a token is set)
 - **Queued, not inline.** An HTTP POST to an unreachable host can block for
   seconds; sending from the packet handler would make the radio miss traffic for
   the whole of it. Events are queued on receipt and drained one per loop pass.
-- **8-slot queue, oldest dropped when full.** A slow endpoint degrades delivery
+- **Fan-out:** one queue entry per matching endpoint, so each gets its own
+  delivery and its own accounting.
+- **16-slot shared queue, oldest dropped when full.** A slow endpoint degrades delivery
   rather than stalling the mesh. `dropped` in `GET /api/webhook` counts losses.
 - **No retries.** A failed POST increments `failed` and is discarded. The mesh is
   the system of record; the webhook is a convenience.

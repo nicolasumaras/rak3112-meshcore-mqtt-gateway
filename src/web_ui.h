@@ -55,9 +55,9 @@ public:
         server.on("/api/contacts", HTTP_GET, [this]() { handleContacts(); });
         server.on("/api/messages", HTTP_GET, [this]() { handleMessages(); });
         server.on("/api/messages", HTTP_POST, [this]() { handleSend(); });
-        server.on("/api/webhook", HTTP_GET, [this]() { handleGetWebhook(); });
-        server.on("/api/webhook", HTTP_POST, [this]() { handleSetWebhook(); });
-        server.on("/api/webhook/test", HTTP_POST, [this]() { handleTestWebhook(); });
+        server.on("/api/webhooks", HTTP_GET, [this]() { handleGetWebhooks(); });
+        server.on("/api/webhooks", HTTP_POST, [this]() { handleSetWebhooks(); });
+        server.on("/api/webhooks/test", HTTP_POST, [this]() { handleTestWebhook(); });
         server.on("/api/timesync", HTTP_POST, [this]() { handleTimeSync(); });
         server.onNotFound([this]() { server.send(404, "text/plain", "not found"); });
         server.begin();
@@ -285,62 +285,90 @@ private:
         server.send(200, "application/json", out);
     }
 
-    // Non-reversible fingerprint so an operator can confirm the device holds the
-    // same token as their receiver without it ever being readable back.
-    void tokenFingerprint(char *out, size_t n)
+    void fingerprintOf(const char *tok, char *out, size_t n)
     {
-        if (config.webhook.token[0] == '\0') { snprintf(out, n, "-"); return; }
+        if (!tok || tok[0] == '\0') { snprintf(out, n, "-"); return; }
         SHA256 sha;
         uint8_t h[32];
         sha.reset();
-        sha.update((const uint8_t *)config.webhook.token, strlen(config.webhook.token));
+        sha.update((const uint8_t *)tok, strlen(tok));
         sha.finalize(h, sizeof(h));
         snprintf(out, n, "%02x%02x%02x%02x", h[0], h[1], h[2], h[3]);
     }
 
-    void handleGetWebhook()
+    void webhooksToJson(JsonArray a)
+    {
+        for (int i = 0; i < MAX_WEBHOOKS; ++i)
+        {
+            JsonObject o = a.createNestedObject();
+            char fp[16]; fingerprintOf(config.webhooks[i].token, fp, sizeof(fp));
+            o["id"] = i;
+            o["enabled"] = config.webhooks[i].enabled;
+            o["url"] = config.webhooks[i].url;
+            o["hasToken"] = strlen(config.webhooks[i].token) > 0;
+            o["tokenLength"] = (int)strlen(config.webhooks[i].token);
+            o["tokenFingerprint"] = fp;
+            o["includePublic"] = config.webhooks[i].includePublic;
+            o["includeDirect"] = config.webhooks[i].includeDirect;
+            o["delivered"] = hook.deliveredCount(i);
+            o["failed"] = hook.failedCount(i);
+        }
+    }
+
+    void handleGetWebhooks()
     {
         if (!authed()) return;
-        StaticJsonDocument<512> d;
-        d["enabled"] = config.webhook.enabled;
-        d["url"] = config.webhook.url;
-        d["hasToken"] = strlen(config.webhook.token) > 0;
-        {
-            char fp[16]; tokenFingerprint(fp, sizeof(fp));
-            d["tokenLength"] = (int)strlen(config.webhook.token);
-            d["tokenFingerprint"] = fp;
-        }
-        d["includePublic"] = config.webhook.includePublic;
-        d["includeDirect"] = config.webhook.includeDirect;
-        d["delivered"] = hook.deliveredCount();
-        d["failed"] = hook.failedCount();
-        d["dropped"] = hook.droppedCount();
-        d["pending"] = hook.pending();
+        StaticJsonDocument<3072> d;
+        JsonObject root = d.to<JsonObject>();
+        webhooksToJson(root.createNestedArray("webhooks"));
+        root["dropped"] = hook.droppedCount();
+        root["pending"] = hook.pending();
+        root["max"] = MAX_WEBHOOKS;
         String out; serializeJson(d, out);
         server.send(200, "application/json", out);
     }
 
-    void handleSetWebhook()
+    // Accepts {"webhooks":[{"id":0,...},...]} - only the ids present are touched,
+    // so a partial update cannot silently blank the others.
+    bool applyWebhooks(JsonArray arr, String &err)
+    {
+        for (JsonObject w : arr)
+        {
+            int i = w["id"] | -1;
+            if (i < 0 || i >= MAX_WEBHOOKS) { err = "bad webhook id"; return false; }
+            if (w.containsKey("url")) copyStr(config.webhooks[i].url, sizeof(config.webhooks[i].url), w["url"]);
+            if (!setSecret(config.webhooks[i].token, sizeof(config.webhooks[i].token), w["token"]))
+            {
+                err = "token too long (max 128 characters)";
+                return false;
+            }
+            if (w.containsKey("enabled")) config.webhooks[i].enabled = w["enabled"];
+            if (w.containsKey("includePublic")) config.webhooks[i].includePublic = w["includePublic"];
+            if (w.containsKey("includeDirect")) config.webhooks[i].includeDirect = w["includeDirect"];
+            if (w["clearToken"] | false) config.webhooks[i].token[0] = '\0';
+            if (config.webhooks[i].url[0] == '\0') config.webhooks[i].enabled = false;
+        }
+        return true;
+    }
+
+    void handleSetWebhooks()
     {
         if (!authed()) return;
-        StaticJsonDocument<512> d;
+        StaticJsonDocument<3072> d;
         if (deserializeJson(d, server.arg("plain")) != DeserializationError::Ok)
         {
             server.send(400, "application/json", "{\"error\":\"bad json\"}");
             return;
         }
-        if (d.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), d["url"]);
-        if (!setSecret(config.webhook.token, sizeof(config.webhook.token), d["token"]))
+        JsonArray arr = d["webhooks"].as<JsonArray>();
+        if (arr.isNull()) { server.send(400, "application/json", "{\"error\":\"expected webhooks array\"}"); return; }
+
+        String err;
+        if (!applyWebhooks(arr, err))
         {
-            server.send(400, "application/json",
-                        "{\"error\":\"token too long (max 128 characters)\"}");
+            server.send(400, "application/json", String("{\"error\":\"") + err + "\"}");
             return;
         }
-        if (d.containsKey("enabled")) config.webhook.enabled = d["enabled"];
-        if (d.containsKey("includePublic")) config.webhook.includePublic = d["includePublic"];
-        if (d.containsKey("includeDirect")) config.webhook.includeDirect = d["includeDirect"];
-        if (config.webhook.url[0] == '\0') config.webhook.enabled = false;
-
         if (!settings.saveConfig(config))
         {
             server.send(500, "application/json", "{\"error\":\"save failed\"}");
@@ -352,15 +380,17 @@ private:
     void handleTestWebhook()
     {
         if (!authed()) return;
-        if (!hook.configured())
+        int i = server.hasArg("id") ? server.arg("id").toInt() : 0;
+        if (i < 0 || i >= MAX_WEBHOOKS)
         {
-            server.send(400, "application/json", "{\"error\":\"webhook not configured\"}");
+            server.send(400, "application/json", "{\"error\":\"bad webhook id\"}");
             return;
         }
-        int code = hook.sendTest();
+        int code = hook.sendTest(i);
         StaticJsonDocument<256> d;
         bool ok = (code >= 200 && code < 300);
         d["ok"] = ok;
+        d["id"] = i;
         d["status"] = code;
         d[ok ? "detail" : "error"] = hook.lastError();
         String out; serializeJson(d, out);
@@ -421,21 +451,7 @@ private:
         g["minLevel"] = config.log.minLevel;
         g["heartbeatSec"] = config.log.heartbeatSec;
 
-        JsonObject wh = d.createNestedObject("webhook");
-        wh["enabled"] = config.webhook.enabled;
-        wh["url"] = config.webhook.url;
-        wh["hasToken"] = strlen(config.webhook.token) > 0;
-        {
-            char fp[16]; tokenFingerprint(fp, sizeof(fp));
-            wh["tokenLength"] = (int)strlen(config.webhook.token);
-            wh["tokenFingerprint"] = fp;
-        }
-        wh["includePublic"] = config.webhook.includePublic;
-        wh["includeDirect"] = config.webhook.includeDirect;
-        wh["delivered"] = hook.deliveredCount();
-        wh["failed"] = hook.failedCount();
-        wh["dropped"] = hook.droppedCount();
-        wh["pending"] = hook.pending();
+        webhooksToJson(d.createNestedArray("webhooks"));
 
         JsonObject clk = d.createNestedObject("clock");
         clk["ntpServer"] = config.clock.ntpServer;
@@ -540,20 +556,14 @@ private:
             if (c.containsKey("timezoneMinutes")) config.clock.timezoneMinutes = (int16_t)clampInt(c["timezoneMinutes"], -840, 840);
             if (c.containsKey("autoSync")) config.clock.autoSync = c["autoSync"];
         }
-        if (d.containsKey("webhook"))
+        if (d.containsKey("webhooks"))
         {
-            JsonObject wh = d["webhook"];
-            if (wh.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), wh["url"]);
-            if (!setSecret(config.webhook.token, sizeof(config.webhook.token), wh["token"]))
+            String err;
+            if (!applyWebhooks(d["webhooks"].as<JsonArray>(), err))
             {
-                server.send(400, "application/json",
-                            "{\"error\":\"token too long (max 128 characters)\"}");
+                server.send(400, "application/json", String("{\"error\":\"") + err + "\"}");
                 return;
             }
-            if (wh.containsKey("enabled")) config.webhook.enabled = wh["enabled"];
-            if (wh.containsKey("includePublic")) config.webhook.includePublic = wh["includePublic"];
-            if (wh.containsKey("includeDirect")) config.webhook.includeDirect = wh["includeDirect"];
-            if (config.webhook.url[0] == '\0') config.webhook.enabled = false;
         }
         if (d.containsKey("location"))
         {
@@ -719,33 +729,10 @@ summary::-webkit-details-marker{opacity:.5}
       </div>
     </fieldset>
 
-    <fieldset><legend>Webhook <span class="meta">applies immediately</span></legend>
-      <div class="warn">The token is sent by the gateway to <em>your</em> endpoint as <code>Authorization: Bearer &lt;token&gt;</code> so your server can verify the POST came from here. You choose the value; it is never readable back.</div>
-      <div class="row">
-        <div><label><input type="checkbox" id="c_when" style="width:auto"> Enabled</label></div>
-        <div style="flex:2 1 20rem"><label>URL</label><input id="c_whurl" placeholder="https://your.host/hook"></div>
-        <div><label>Token <span class="meta" id="c_whtokset"></span></label>
-          <div style="display:flex;gap:.4rem">
-            <input id="c_whtok" type="password" placeholder="unchanged" maxlength="128" style="flex:1">
-            <button id="whgen" type="button" title="Generate a random 64-character token">Generate</button>
-          </div>
-        </div>
-        <div><label><input type="checkbox" id="c_whpub" style="width:auto"> Public messages</label></div>
-        <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
-      </div>
-      <div id="whreveal" style="display:none;margin-top:.6rem">
-        <div class="warn" id="whrevmsg"><strong>Copy this now.</strong> It cannot be shown again once dismissed. Paste it into your receiving endpoint, then press Save settings (Save stores this token) or Send test delivery.</div>
-        <div style="display:flex;gap:.4rem">
-          <input id="whplain" readonly style="flex:1;font-family:ui-monospace,monospace;font-size:.8rem">
-          <button id="whcopy" type="button">Copy</button>
-          <button id="whdone" type="button" title="Hide the token">Done</button>
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:.5rem">
-        <button id="whtest">Send test delivery</button>
-        <span class="meta" id="whstats" style="flex:1"></span>
-      </div>
+    <fieldset><legend>Webhooks <span class="meta">applies immediately</span></legend>
+      <div class="warn">Each endpoint gets its own copy of every message and its own token. The token is sent as <code>Authorization: Bearer &lt;token&gt;</code> so your server can verify the POST came from here. You choose the value; it is never readable back.</div>
+      <div id="whlist"></div>
+      <div class="meta" id="whglobal" style="margin-top:.4rem"></div>
     </fieldset>
 
     <div class="row" style="margin-top:.75rem">
@@ -832,24 +819,39 @@ function fill(c){
   g('c_logen').checked=c.log.enabled; g('c_logsrv').value=c.log.server;
   g('c_logport').value=c.log.port; g('c_loglvl').value=c.log.minLevel;
   g('c_loghb').value=c.log.heartbeatSec;
+  renderHooks(c.webhooks||[]);
   const k=c.clock||{};
   g('c_clkauto').checked=!!k.autoSync; g('c_clkntp').value=k.ntpServer||'';
   g('c_clktz').value=k.timezoneMinutes||0;
   g('clkstate').textContent = k.valid ? ('clock set — '+k.now)
       : 'clock NOT set — webhook ts is uptime, not a real time';
-  const w=c.webhook||{};
-  g('c_when').checked=!!w.enabled; g('c_whurl').value=w.url||'';
-  g('c_whtokset').textContent = w.hasToken
-      ? ('set · '+w.tokenLength+' chars · fp '+w.tokenFingerprint) : '(not set)';
-  g('c_whpub').checked=w.includePublic!==false; g('c_whdir').checked=w.includeDirect!==false;
-  lastSavedUrl=w.url||'';
-  g('whstats').textContent='delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+
                            ' · dropped '+(w.dropped||0)+' · pending '+(w.pending||0);
 }
-let cfgLoaded=false, lastSavedUrl=null, tokenCopied=false, mqttWasEnabled=false;
+let cfgLoaded=false, lastSavedUrl=null, mqttWasEnabled=false;
+
+// A revealed token still on screen that was never copied is unrecoverable once
+// the row is re-rendered, so both the collapse guard and the post-save message
+// have to look across every endpoint rather than a single global box.
+function hookRows(){ return Array.from(document.querySelectorAll('#whlist > .card')); }
+function uncopiedTokens(){
+  return hookRows().some(d => d.querySelector('.whReveal').style.display!=='none'
+                              && d.dataset.copied!=='1');
+}
+function markSavedTokens(){
+  hookRows().forEach(d=>{
+    const rev=d.querySelector('.whReveal');
+    if(rev.style.display==='none') return;
+    const copied=d.dataset.copied==='1';
+    const m=d.querySelector('.whRevMsg');
+    m.innerHTML = copied
+      ? '<strong>Saved to the gateway.</strong> You copied this token — make sure your endpoint has it, then press Done.'
+      : '<strong>Saved — but you have not copied it yet.</strong> Copy it now and paste it into your receiving endpoint. Once you press Done it cannot be shown again.';
+    m.style.borderLeftColor = copied ? '#3a9d5d' : '#c0392b';
+  });
+}
 g('cfgcard').addEventListener('toggle',async e=>{
   if(!e.target.open){
-    if(g('whreveal').style.display!=='none' && !tokenCopied){
+    if(uncopiedTokens()){
       alert('A newly generated webhook token is still on screen and has not been copied. It cannot be shown again.');
       e.target.open=true;
     }
@@ -880,10 +882,9 @@ g('cfgsave').onclick=async()=>{
           basePrefix:g('c_mqpfx').value},
     log:{enabled:g('c_logen').checked,server:g('c_logsrv').value,port:parseInt(g('c_logport').value,10),
          minLevel:parseInt(g('c_loglvl').value,10),heartbeatSec:parseInt(g('c_loghb').value,10)},
+    webhooks:collectHooks(),
     clock:{ntpServer:g('c_clkntp').value,timezoneMinutes:parseInt(g('c_clktz').value,10)||0,
            autoSync:g('c_clkauto').checked},
-    webhook:{enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
-             includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}
   };
   if(!g('c_mqen').checked && mqttWasEnabled){
     if(!confirm('Disabling MQTT also stops WiFi on this firmware, which means no web UI, no syslog and no webhooks. You would need a USB cable to undo it.\n\nDisable MQTT anyway?')){
@@ -896,16 +897,13 @@ g('cfgsave').onclick=async()=>{
   g('cfgstatus').textContent = err ? ('failed: '+err)
       : 'saved — restart required for radio, WiFi, MQTT and logging changes';
   if(!err){
-    g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value=''; cfgLoaded=false;
-    // Deliberately NOT clearing the revealed token here. Saving used to hide it,
-    // which meant the gateway held a token the operator could no longer read -
+    g('c_wpw').value=''; g('c_mqpw').value='';
+    document.querySelectorAll('#whlist .whTok').forEach(i=>i.value='');
+    cfgLoaded=false;
+    // Deliberately NOT clearing revealed tokens here. Saving used to hide them,
+    // which meant the gateway held a secret the operator could no longer read -
     // the exact cause of a "token mismatch" that looked like a save failure.
-    if(g('whreveal').style.display!=='none'){
-      g('whrevmsg').innerHTML = tokenCopied
-        ? '<strong>Saved to the gateway.</strong> You copied this token — make sure your endpoint has it, then press Done.'
-        : '<strong>Saved to the gateway — but you have not copied it yet.</strong> Copy it now and paste it into your receiving endpoint. Once you press Done it cannot be shown again.';
-      g('whrevmsg').style.borderLeftColor = tokenCopied ? '#3a9d5d' : '#c0392b';
-    }
+    markSavedTokens();
   }
 };
 g('clksync').onclick=async()=>{
@@ -914,60 +912,87 @@ g('clksync').onclick=async()=>{
   if(err){ g('clkstate').textContent='sync failed: '+err; return; }
   try{ fill(await (await fetch('/api/config')).json()); }catch(e){}
 };
-g('whgen').onclick=()=>{
-  // getRandomValues works in insecure contexts; crypto.subtle does not, which is
-  // why this uses the former. Never fall back to Math.random for a secret - an
-  // unpredictable-looking but guessable token is worse than no button at all.
-  if(!(window.crypto&&window.crypto.getRandomValues)){
-    g('cfgstatus').textContent='this browser cannot generate securely — use: openssl rand -hex 32';
-    return;
-  }
-  const b=new Uint8Array(32); window.crypto.getRandomValues(b);
-  const tok=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
-  g('c_whtok').value=tok;
-  g('whplain').value=tok;
-  g('whreveal').style.display='block';
-  tokenCopied=false;
-  g('whrevmsg').innerHTML='<strong>Copy this now.</strong> It cannot be shown again once dismissed. Paste it into your receiving endpoint, then press Save settings (Save stores this token) or Send test delivery.';
-  g('whrevmsg').style.borderLeftColor='';
-  g('cfgstatus').textContent='token generated — copy it, then Save settings';
-};
-g('whcopy').onclick=async()=>{
-  const v=g('whplain').value;
-  try{ await navigator.clipboard.writeText(v); tokenCopied=true;
-       g('cfgstatus').textContent='token copied to clipboard'; }
-  catch(e){ g('whplain').select(); tokenCopied=true;
-            g('cfgstatus').textContent='press Cmd/Ctrl+C to copy'; }
-};
-g('whdone').onclick=()=>{
-  if(!tokenCopied && !confirm('You have not copied this token. It cannot be shown again. Hide it anyway?')) return;
-  g('whreveal').style.display='none'; g('whplain').value=''; tokenCopied=false;
-  g('whrevmsg').style.borderLeftColor='';
-};
-g('whtest').onclick=async()=>{
-  // The device tests with its STORED token. Testing while an unsaved one sits in
-  // the form sends the old value and the endpoint answers 401 - which reads as
-  // "the token is broken" when it only means "you have not saved yet".
-  if(g('c_whtok').value || g('c_whurl').value !== (lastSavedUrl||g('c_whurl').value)){
-    g('cfgstatus').textContent='saving changes first...';
-    const serr=await post('/api/config',{webhook:{
-      enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
-      includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}});
-    if(serr){ g('cfgstatus').textContent='could not save: '+serr; return; }
-    g('c_whtok').value='';
-  }
-  g('cfgstatus').textContent='sending test delivery...';
-  const err=await post('/api/webhook/test');
-  g('cfgstatus').textContent = err ? ('test failed: '+err) : 'test delivered — your endpoint returned 2xx';
-  cfgLoaded=false; refresh();
-  try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true; }catch(e){}
-};
 g('cfgrestart').onclick=async()=>{
   if(!confirm('Restart the gateway now? The page will be unreachable for a few seconds.')) return;
   g('cfgstatus').textContent='restarting...';
   await post('/api/restart');
   setTimeout(()=>{ g('cfgstatus').textContent='restarted — reload the page'; },6000);
 };
+
+
+function hookRow(w){
+  const d=document.createElement('div');
+  d.className='card'; d.style.margin='.5rem 0';
+  d.innerHTML=
+    '<div class="row">'+
+      '<div><label><input type="checkbox" class="whEn" '+(w.enabled?'checked':'')+' style="width:auto"> Endpoint '+(w.id+1)+'</label></div>'+
+      '<div style="flex:2 1 18rem"><label>URL</label><input class="whUrl" placeholder="https://your.host/hook" value="'+esc(w.url||'')+'"></div>'+
+      '<div><label>Token <span class="meta whFp">'+(w.hasToken?('set · '+w.tokenLength+' chars · fp '+w.tokenFingerprint):'(not set)')+'</span></label>'+
+        '<div style="display:flex;gap:.4rem"><input class="whTok" type="password" placeholder="unchanged" maxlength="128" style="flex:1">'+
+        '<button class="whGen" type="button">Generate</button></div></div>'+
+      '<div><label><input type="checkbox" class="whPub" '+(w.includePublic!==false?'checked':'')+' style="width:auto"> Public</label></div>'+
+      '<div><label><input type="checkbox" class="whDir" '+(w.includeDirect!==false?'checked':'')+' style="width:auto"> Direct</label></div>'+
+    '</div>'+
+    '<div class="whReveal" style="display:none;margin-top:.5rem">'+
+      '<div class="warn whRevMsg"><strong>Copy this now.</strong> It cannot be shown again once dismissed.</div>'+
+      '<div style="display:flex;gap:.4rem">'+
+        '<input class="whPlain" readonly style="flex:1;font-family:ui-monospace,monospace;font-size:.8rem">'+
+        '<button class="whCopy" type="button">Copy</button><button class="whDone" type="button">Done</button>'+
+      '</div></div>'+
+    '<div class="row" style="margin-top:.4rem">'+
+      '<button class="whTest" type="button">Send test delivery</button>'+
+      '<span class="meta whStats" style="flex:1">delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+'</span>'+
+    '</div>';
+  d.dataset.id=w.id; d.dataset.copied='0';
+  const q=c=>d.querySelector(c);
+  q('.whGen').onclick=()=>{
+    if(!(window.crypto&&window.crypto.getRandomValues)){
+      g('cfgstatus').textContent='this browser cannot generate securely — use: openssl rand -hex 32'; return; }
+    const b=new Uint8Array(32); window.crypto.getRandomValues(b);
+    const t=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+    q('.whTok').value=t; q('.whPlain').value=t;
+    q('.whReveal').style.display='block'; d.dataset.copied='0';
+    q('.whRevMsg').innerHTML='<strong>Copy this now.</strong> It cannot be shown again once dismissed.';
+    q('.whRevMsg').style.borderLeftColor='';
+  };
+  q('.whCopy').onclick=async()=>{
+    try{ await navigator.clipboard.writeText(q('.whPlain').value); }
+    catch(e){ q('.whPlain').select(); }
+    d.dataset.copied='1'; g('cfgstatus').textContent='token copied';
+  };
+  q('.whDone').onclick=()=>{
+    if(d.dataset.copied!=='1' && !confirm('You have not copied this token. It cannot be shown again. Hide it anyway?')) return;
+    q('.whReveal').style.display='none'; q('.whPlain').value='';
+  };
+  q('.whTest').onclick=async()=>{
+    g('cfgstatus').textContent='saving endpoint '+(w.id+1)+'...';
+    const serr=await post('/api/webhooks',{webhooks:[collectHook(d)]});
+    if(serr){ g('cfgstatus').textContent='could not save: '+serr; return; }
+    q('.whTok').value='';
+    g('cfgstatus').textContent='testing endpoint '+(w.id+1)+'...';
+    const err=await post('/api/webhooks/test?id='+w.id);
+    g('cfgstatus').textContent = err ? ('endpoint '+(w.id+1)+' failed: '+err)
+                                     : ('endpoint '+(w.id+1)+' delivered — returned 2xx');
+    cfgLoaded=false;
+    try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true; }catch(e){}
+  };
+  return d;
+}
+function collectHook(d){
+  const q=c=>d.querySelector(c);
+  return {id:parseInt(d.dataset.id,10), enabled:q('.whEn').checked, url:q('.whUrl').value,
+          token:q('.whTok').value, includePublic:q('.whPub').checked, includeDirect:q('.whDir').checked};
+}
+function renderHooks(ws){
+  // Re-rendering destroys any revealed token, so skip the refresh while one is
+  // still on screen uncopied.
+  if(uncopiedTokens()) return;
+  const box=g('whlist'); box.innerHTML='';
+  ws.forEach(w=>box.appendChild(hookRow(w)));
+}
+function collectHooks(){
+  return Array.from(document.querySelectorAll('#whlist > .card')).map(collectHook);
+}
 
 refresh(); setInterval(refresh,4000);
 </script></body></html>)HTML";

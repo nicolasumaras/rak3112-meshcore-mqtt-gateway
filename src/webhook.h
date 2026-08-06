@@ -21,7 +21,7 @@
 
 #include "config.h"
 
-#define WEBHOOK_QUEUE_SLOTS 8
+#define WEBHOOK_QUEUE_SLOTS 16
 #define WEBHOOK_TIMEOUT_MS  4000
 
 struct WebhookEvent
@@ -34,6 +34,7 @@ struct WebhookEvent
     uint32_t id;        // strictly increasing per delivery
     uint32_t uptime;    // seconds since boot, always meaningful
     bool clockValid;    // false when ts is uptime, not a real epoch
+    int8_t target;      // which webhook slot this delivery is for
 };
 
 class WebhookSender
@@ -46,60 +47,83 @@ public:
 
     void setLogger(LogFn fn) { logger = fn; }
 
-    bool configured() const
+    bool configured(int i) const
     {
-        return config.webhook.enabled && config.webhook.url[0] != '\0';
+        return i >= 0 && i < MAX_WEBHOOKS &&
+               config.webhooks[i].enabled && config.webhooks[i].url[0] != '\0';
     }
 
+    bool anyConfigured() const
+    {
+        for (int i = 0; i < MAX_WEBHOOKS; ++i) if (configured(i)) return true;
+        return false;
+    }
+
+    // One queue entry per matching webhook. Each endpoint gets its own delivery
+    // and its own success/failure accounting, so a broken endpoint cannot mask
+    // or hold up a working one.
     void enqueue(const char *from, const char *text, int rssi, bool isDirect)
     {
         const char *kind = isDirect ? "direct" : "public";
-        if (!configured()) { note("hook skip %s: not configured", kind); return; }
-        if (isDirect && !config.webhook.includeDirect) { note("hook skip direct: filtered off"); return; }
-        if (!isDirect && !config.webhook.includePublic) { note("hook skip public: filtered off"); return; }
-        note("hook queue %s from=%s len=%u", kind, from, (unsigned)strlen(text));
+        if (!anyConfigured()) { note("hook skip %s: no webhooks configured", kind); return; }
 
-        int next = (head + 1) % WEBHOOK_QUEUE_SLOTS;
-        if (next == tail)
+        uint32_t id = ++seq;
+        int queued = 0;
+        for (int i = 0; i < MAX_WEBHOOKS; ++i)
         {
-            // Full: drop the oldest so the newest always gets a chance.
-            tail = (tail + 1) % WEBHOOK_QUEUE_SLOTS;
-            dropped++;
+            if (!configured(i)) continue;
+            if (isDirect && !config.webhooks[i].includeDirect) continue;
+            if (!isDirect && !config.webhooks[i].includePublic) continue;
+
+            int next = (head + 1) % WEBHOOK_QUEUE_SLOTS;
+            if (next == tail)
+            {
+                tail = (tail + 1) % WEBHOOK_QUEUE_SLOTS;
+                dropped++;
+            }
+            WebhookEvent &e = queue[head];
+            strncpy(e.from, from, sizeof(e.from) - 1); e.from[sizeof(e.from) - 1] = '\0';
+            strncpy(e.text, text, sizeof(e.text) - 1); e.text[sizeof(e.text) - 1] = '\0';
+            e.rssi = (int16_t)rssi;
+            e.isDirect = isDirect;
+            e.uptime = millis() / 1000;
+            e.ts = (uint32_t)time(nullptr);
+            e.clockValid = (e.ts >= 1600000000UL);
+            if (!e.clockValid) e.ts = e.uptime;
+            e.id = id;              // same id across endpoints: it identifies the message
+            e.target = (int8_t)i;
+            head = next;
+            queued++;
         }
-        WebhookEvent &e = queue[head];
-        strncpy(e.from, from, sizeof(e.from) - 1); e.from[sizeof(e.from) - 1] = '\0';
-        strncpy(e.text, text, sizeof(e.text) - 1); e.text[sizeof(e.text) - 1] = '\0';
-        e.rssi = (int16_t)rssi;
-        e.isDirect = isDirect;
-        e.uptime = millis() / 1000;
-        e.ts = (uint32_t)time(nullptr);
-        e.clockValid = (e.ts >= 1600000000UL);
-        if (!e.clockValid) e.ts = e.uptime;
-        e.id = ++seq;
-        head = next;
+        if (queued) note("hook queue %s from=%s len=%u -> %d endpoint(s)",
+                         kind, from, (unsigned)strlen(text), queued);
+        else        note("hook skip %s: filtered off everywhere", kind);
     }
 
     // Call from loop(). Sends at most one queued event per invocation.
     void loop()
     {
         if (head == tail) return;
-        if (!configured()) { tail = head; return; }   // discard if disabled mid-flight
         if (WiFi.status() != WL_CONNECTED) return;    // keep queued, retry later
 
         WebhookEvent e = queue[tail];
-        int code = post(e);
-        if (code >= 200 && code < 300) delivered++; else failed++;
-        note("hook post %s id=%lu status=%d %s", e.isDirect ? "direct" : "public",
-             (unsigned long)e.id, code, lastErr);
         tail = (tail + 1) % WEBHOOK_QUEUE_SLOTS;
+
+        if (!configured(e.target)) return;            // disabled since it was queued
+
+        int code = post(e);
+        if (code >= 200 && code < 300) { delivered++; stats[e.target].delivered++; }
+        else                           { failed++;    stats[e.target].failed++; }
+        note("hook post #%d %s id=%lu status=%d %s", e.target + 1,
+             e.isDirect ? "direct" : "public", (unsigned long)e.id, code, lastErr);
     }
 
     // Returns the HTTP status, or a negative HTTPClient error. lastError() holds
     // a human-readable reason - a bare bool told the operator nothing about
     // whether it was DNS, TLS, a refused connection or a 404.
-    int sendTest()
+    int sendTest(int i)
     {
-        if (!configured()) { snprintf(lastErr, sizeof(lastErr), "not configured"); return -1000; }
+        if (!configured(i)) { snprintf(lastErr, sizeof(lastErr), "not configured"); return -1000; }
         WebhookEvent e = {};
         strncpy(e.from, "(test)", sizeof(e.from) - 1);
         strncpy(e.text, "webhook test from RAK3112 gateway", sizeof(e.text) - 1);
@@ -110,6 +134,7 @@ public:
         e.clockValid = (e.ts >= 1600000000UL);
         if (!e.clockValid) e.ts = e.uptime;
         e.id = ++seq;
+        e.target = (int8_t)i;
         return post(e);
     }
 
@@ -118,6 +143,8 @@ public:
     uint32_t deliveredCount() const { return delivered; }
     uint32_t failedCount() const { return failed; }
     uint32_t droppedCount() const { return dropped; }
+    uint32_t deliveredCount(int i) const { return (i >= 0 && i < MAX_WEBHOOKS) ? stats[i].delivered : 0; }
+    uint32_t failedCount(int i) const { return (i >= 0 && i < MAX_WEBHOOKS) ? stats[i].failed : 0; }
     int pending() const { return (head - tail + WEBHOOK_QUEUE_SLOTS) % WEBHOOK_QUEUE_SLOTS; }
 
 private:
@@ -125,6 +152,8 @@ private:
     WebhookEvent queue[WEBHOOK_QUEUE_SLOTS];
     int head, tail;
     uint32_t delivered, failed, dropped;
+    struct PerHook { uint32_t delivered = 0; uint32_t failed = 0; };
+    PerHook stats[MAX_WEBHOOKS];
     uint32_t seq = 0;
     char lastErr[96] = {0};
     LogFn logger;
@@ -178,7 +207,8 @@ private:
         String body;
         serializeJson(d, body);
 
-        bool isTls = strncmp(config.webhook.url, "https://", 8) == 0;
+        const WebhookConfig &wh = config.webhooks[e.target < 0 ? 0 : e.target];
+        bool isTls = strncmp(wh.url, "https://", 8) == 0;
 
         // begin(url) with no client cannot do TLS on ESP32 - an https endpoint
         // fails before a single byte is sent. Give it a secure client explicitly.
@@ -198,8 +228,8 @@ private:
         http.setConnectTimeout(WEBHOOK_TIMEOUT_MS);
         http.setReuse(false);
 
-        bool ok = isTls ? http.begin(secure, config.webhook.url)
-                        : http.begin(plain, config.webhook.url);
+        bool ok = isTls ? http.begin(secure, wh.url)
+                        : http.begin(plain, wh.url);
         if (!ok)
         {
             snprintf(lastErr, sizeof(lastErr), "could not parse URL (need http:// or https://)");
@@ -207,9 +237,9 @@ private:
         }
 
         http.addHeader("Content-Type", "application/json");
-        if (config.webhook.token[0])
+        if (wh.token[0])
         {
-            http.addHeader("Authorization", String("Bearer ") + config.webhook.token);
+            http.addHeader("Authorization", String("Bearer ") + wh.token);
         }
         int code = http.POST(body);
         http.end();

@@ -199,8 +199,10 @@ struct LogConfig {
     uint16_t heartbeatSec;   // periodic heap/counter line; 0 disables
 };
 
-// Outbound webhook for received messages. URL empty = disabled, so the device
+// Outbound webhooks for received messages. URL empty = disabled, so the device
 // never posts anywhere an operator did not configure.
+#define MAX_WEBHOOKS 4
+
 struct WebhookConfig {
     char url[160];
     // 128 chars + NUL. Sized so the common generators fit whole:
@@ -242,7 +244,7 @@ struct GatewayConfig {
     LocationConfig location;
     ClockConfig clock;
     LogConfig log;
-    WebhookConfig webhook;
+    WebhookConfig webhooks[MAX_WEBHOOKS];
 };
 
 // Derive a safe MQTT Client ID from the repeater node name
@@ -368,11 +370,13 @@ inline GatewayConfig getDefaultConfig() {
     config.location.longitude = 0.0f;
 
     // Clock defaults
-    config.webhook.url[0] = '\0';
-    config.webhook.token[0] = '\0';
-    config.webhook.enabled = false;
-    config.webhook.includePublic = true;
-    config.webhook.includeDirect = true;
+    for (int i = 0; i < MAX_WEBHOOKS; ++i) {
+        config.webhooks[i].url[0] = '\0';
+        config.webhooks[i].token[0] = '\0';
+        config.webhooks[i].enabled = false;
+        config.webhooks[i].includePublic = true;
+        config.webhooks[i].includeDirect = true;
+    }
 
     config.log.server[0] = '\0';   // off until an operator sets a host
     config.log.port = 514;

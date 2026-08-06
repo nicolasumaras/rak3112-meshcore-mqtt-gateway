@@ -90,11 +90,14 @@ public:
         prefs.putFloat("loc_lon", config.location.longitude);
 
         // Clock
-        prefs.putString("wh_url", config.webhook.url);
-        prefs.putString("wh_tok", config.webhook.token);
-        prefs.putBool("wh_en", config.webhook.enabled);
-        prefs.putBool("wh_pub", config.webhook.includePublic);
-        prefs.putBool("wh_dir", config.webhook.includeDirect);
+        for (int i = 0; i < MAX_WEBHOOKS; ++i) {
+            char k[16];
+            snprintf(k, sizeof(k), "wh%d_url", i);  prefs.putString(k, config.webhooks[i].url);
+            snprintf(k, sizeof(k), "wh%d_tok", i);  prefs.putString(k, config.webhooks[i].token);
+            snprintf(k, sizeof(k), "wh%d_en", i);   prefs.putBool(k, config.webhooks[i].enabled);
+            snprintf(k, sizeof(k), "wh%d_pub", i);  prefs.putBool(k, config.webhooks[i].includePublic);
+            snprintf(k, sizeof(k), "wh%d_dir", i);  prefs.putBool(k, config.webhooks[i].includeDirect);
+        }
 
         prefs.putString("log_srv", config.log.server);
         prefs.putUShort("log_port", config.log.port);
@@ -240,13 +243,33 @@ public:
         config.location.longitude = prefs.getFloat("loc_lon", 0.0f);
 
         // Clock
-        strncpy(config.webhook.url, prefs.getString("wh_url", "").c_str(), sizeof(config.webhook.url) - 1);
-        config.webhook.url[sizeof(config.webhook.url) - 1] = '\0';
-        strncpy(config.webhook.token, prefs.getString("wh_tok", "").c_str(), sizeof(config.webhook.token) - 1);
-        config.webhook.token[sizeof(config.webhook.token) - 1] = '\0';
-        config.webhook.enabled = prefs.getBool("wh_en", false);
-        config.webhook.includePublic = prefs.getBool("wh_pub", true);
-        config.webhook.includeDirect = prefs.getBool("wh_dir", true);
+        for (int i = 0; i < MAX_WEBHOOKS; ++i) {
+            char k[16];
+            snprintf(k, sizeof(k), "wh%d_url", i);
+            strncpy(config.webhooks[i].url, prefs.getString(k, "").c_str(), sizeof(config.webhooks[i].url) - 1);
+            config.webhooks[i].url[sizeof(config.webhooks[i].url) - 1] = '\0';
+            snprintf(k, sizeof(k), "wh%d_tok", i);
+            strncpy(config.webhooks[i].token, prefs.getString(k, "").c_str(), sizeof(config.webhooks[i].token) - 1);
+            config.webhooks[i].token[sizeof(config.webhooks[i].token) - 1] = '\0';
+            snprintf(k, sizeof(k), "wh%d_en", i);  config.webhooks[i].enabled = prefs.getBool(k, false);
+            snprintf(k, sizeof(k), "wh%d_pub", i); config.webhooks[i].includePublic = prefs.getBool(k, true);
+            snprintf(k, sizeof(k), "wh%d_dir", i); config.webhooks[i].includeDirect = prefs.getBool(k, true);
+        }
+
+        // Migrate the pre-multi-webhook single entry into slot 0, once. Without
+        // this an upgrade silently loses a configured webhook and its token,
+        // which is unrecoverable since tokens are write-only.
+        if (config.webhooks[0].url[0] == '\0') {
+            String oldUrl = prefs.getString("wh_url", "");
+            if (oldUrl.length() > 0) {
+                strncpy(config.webhooks[0].url, oldUrl.c_str(), sizeof(config.webhooks[0].url) - 1);
+                strncpy(config.webhooks[0].token, prefs.getString("wh_tok", "").c_str(), sizeof(config.webhooks[0].token) - 1);
+                config.webhooks[0].enabled = prefs.getBool("wh_en", false);
+                config.webhooks[0].includePublic = prefs.getBool("wh_pub", true);
+                config.webhooks[0].includeDirect = prefs.getBool("wh_dir", true);
+                Serial.println(F("✓ Migrated existing webhook into slot 1"));
+            }
+        }
 
         strncpy(config.log.server, prefs.getString("log_srv", "").c_str(), sizeof(config.log.server) - 1);
         config.log.server[sizeof(config.log.server) - 1] = '\0';
