@@ -1,0 +1,71 @@
+name: Release Assets (PlatformIO)
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [esp32_mqtt_gateway, lilygo_lora32_v21, heltec_v3_mqtt, heltec_v2_mqtt, tbeam_sx1276]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Install Python tool deps (optional)
+        if: ${{ hashFiles('tools/requirements.txt') != '' }}
+        run: pip install -r tools/requirements.txt
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -e ${{ matrix.env }}
+
+      - name: Collect artifact
+        run: |
+          mkdir -p dist
+          SRC=.pio/build/${{ matrix.env }}/firmware.bin
+          if [ ! -f "$SRC" ]; then echo "Missing $SRC" && exit 1; fi
+          cp "$SRC" "dist/firmware-${{ matrix.env }}.bin"
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            # push event; use ref name
+            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            dist/firmware-${{ matrix.env }}.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
