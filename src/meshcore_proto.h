@@ -61,6 +61,9 @@
 #define MC_TXT_TYPE_PLAIN   0
 
 #define MC_MAX_CONTACTS     16
+
+// Throttle for non-durable contact refreshes (RSSI / replay timestamp only).
+#define CONTACT_SAVE_INTERVAL_MS  (30UL * 60UL * 1000UL)
 #define MC_MAX_MESSAGES     24
 
 struct MCContact
@@ -354,6 +357,7 @@ private:
     uint8_t chanHash = 0;
     char name[32];
     uint32_t advertSeq = 0;
+    unsigned long lastContactSave = 0;
 
     MCMessage messages[MC_MAX_MESSAGES];
     int msgHead;
@@ -460,10 +464,13 @@ private:
         }
         if (!nm[0]) return false;   // MeshCore drops nameless adverts
 
+        bool durable = false;   // is this worth spending a flash write on?
+
         MCContact *c = findContact(pk);
         if (c)
         {
             if (ts <= c->lastAdvert) return true;   // replay guard
+            if (strncmp(c->name, nm, sizeof(c->name)) != 0) durable = true;
         }
         else
         {
@@ -471,12 +478,24 @@ private:
             if (!c) return true;
             memcpy(c->pubKey, pk, MC_PUB_KEY_SIZE);
             c->used = true;
+            durable = true;
             Serial.printf("  ✓ New MeshCore contact: %s\n", nm);
         }
         strncpy(c->name, nm, sizeof(c->name) - 1);
         c->lastAdvert = ts;
         c->lastRssi = (int16_t)rssi;
-        saveContacts();
+
+        // Nodes advertise on a timer, so persisting on every advert would rewrite
+        // the whole ~1.1 KB blob hundreds of times a day purely to refresh an
+        // RSSI. Write immediately when something durable changed; otherwise
+        // throttle, so the replay-guard timestamps still survive a reboot without
+        // hammering flash.
+        unsigned long nowMs = millis();
+        if (durable || nowMs - lastContactSave > CONTACT_SAVE_INTERVAL_MS)
+        {
+            lastContactSave = nowMs;
+            saveContacts();
+        }
         return true;
     }
 
