@@ -11,6 +11,33 @@ with no external Pi or bridge process.
 
 ---
 
+## What it does now
+
+The port outgrew its original scope. A single RAK3112 is a **full MeshCore
+participant** with a web UI, not just an MQTT bridge:
+
+| Capability | Status |
+|---|---|
+| SX1262 bring-up on the RAK3112 pin map | ✅ verified |
+| MeshCore-compatible PHY (preamble derived from SF) | ✅ verified |
+| Flood repeater with correct `path` handling | ✅ verified |
+| Mesh → MQTT (real MeshCore frames as hex) | ✅ verified |
+| MQTT → mesh | ✅ verified |
+| On-device Ed25519 identity, persisted | ✅ verified |
+| Public-channel messages (send + receive) | ✅ verified |
+| Contacts learned from signature-verified adverts | ✅ verified |
+| Direct messages via ECDH, with ACK | ✅ verified |
+| `PATH` return so peers switch to direct routing | ✅ verified |
+| Password-protected web UI | ✅ verified |
+
+Browse to the gateway's IP, log in as `admin`, and you get a contact list, a
+message view, and a send box for public or direct messages — plus "Announce me"
+to broadcast a signed advert so other nodes can add the gateway.
+
+**Known limitation:** DIRECT-routed packets are received and answered but not
+*forwarded*. Relaying them requires matching our identity hash against `path[0]`
+and shuffling the path, which is not implemented. Flood traffic repeats normally.
+
 ## Status
 
 **The radio works on real hardware.** Flashed to a RAK3112 (ESP32-S3 rev v0.2, 16 MB flash,
