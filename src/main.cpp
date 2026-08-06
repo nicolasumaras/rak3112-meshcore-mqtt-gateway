@@ -26,6 +26,7 @@
 #include "serial_config.h"
 #include "syslog_client.h"
 #include "webhook.h"
+#include "time_sync.h"
 #ifdef RAK_3112
 #include "meshcore_proto.h"
 // MeshCore's default "Public" channel PSK, base64 izOH6cXN6mrJ5e26oRXNcg==
@@ -323,6 +324,21 @@ void setup()
     serialConfig = new ConfigMenu(config, settingsManager);
     serialConfig->setOnExitCallback(exitConfigMode);
     serialConfig->begin();
+
+    // Sync the clock on its own account, not only as a side effect of MQTT TLS.
+    if (config.clock.autoSync && WiFi.status() == WL_CONNECTED)
+    {
+        Serial.print(F("Syncing clock via NTP... "));
+        if (timeSyncNow(config))
+        {
+            char now[32]; timeNowString(now, sizeof(now));
+            Serial.printf("ok (%s)\n", now);
+        }
+        else
+        {
+            Serial.println(F("failed - timestamps will fall back to uptime"));
+        }
+    }
 
     webHook = new WebhookSender(config);
     webHook->setLogger([](const char *m) { if (sysLog) sysLog->log(LOG_INFO, m); });

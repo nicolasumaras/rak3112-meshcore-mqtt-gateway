@@ -215,6 +215,24 @@ curl $AUTH -X POST "$GW/api/config" \
 
 Numeric values are clamped on the device (SF 7-12, CR 5-8, TX 2-22, hops 0-63).
 
+### `POST /api/timesync`
+
+Forces an NTP sync immediately and reports the result.
+
+```bash
+curl $AUTH -X POST "$GW/api/timesync"
+# {"ok":true,"now":"2026-08-06 18:46:22"}
+```
+
+`GET /api/config` reports `clock.valid` and `clock.now`, so you can tell whether
+the device actually knows the time.
+
+> **This used to never happen on a plaintext broker.** NTP was only invoked as a
+> side effect of MQTT TLS certificate validation, so with TLS off the clock was
+> never set and `clock.autoSync` had no effect. Webhook payloads carried uptime
+> instead of an epoch, and MeshCore adverts fell back to a synthetic counter.
+> Time is now synced on its own account at boot when `autoSync` is on.
+
 ### `POST /api/restart`
 
 Reboots. Responds first, then restarts, so the caller sees `{"ok":true}`.

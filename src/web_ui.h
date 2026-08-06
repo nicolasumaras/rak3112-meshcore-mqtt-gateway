@@ -22,6 +22,7 @@
 #include "settings_manager.h"
 #include "meshcore_proto.h"
 #include "webhook.h"
+#include "time_sync.h"
 
 typedef bool (*WebSendFn)(const uint8_t *data, size_t len);
 typedef void (*WebLogFn)(const char *msg);
@@ -57,6 +58,7 @@ public:
         server.on("/api/webhook", HTTP_GET, [this]() { handleGetWebhook(); });
         server.on("/api/webhook", HTTP_POST, [this]() { handleSetWebhook(); });
         server.on("/api/webhook/test", HTTP_POST, [this]() { handleTestWebhook(); });
+        server.on("/api/timesync", HTTP_POST, [this]() { handleTimeSync(); });
         server.onNotFound([this]() { server.send(404, "text/plain", "not found"); });
         server.begin();
         started = true;
@@ -365,6 +367,19 @@ private:
         server.send(ok ? 200 : 502, "application/json", out);
     }
 
+    void handleTimeSync()
+    {
+        if (!authed()) return;
+        bool ok = timeSyncNow(config);
+        StaticJsonDocument<192> d;
+        d["ok"] = ok;
+        char now[32]; timeNowString(now, sizeof(now));
+        d["now"] = now;
+        if (!ok) d["error"] = "NTP did not respond (check server and network)";
+        String out; serializeJson(d, out);
+        server.send(ok ? 200 : 502, "application/json", out);
+    }
+
     // Existing secrets are never sent to the browser - only whether one is set.
     // The page posts an empty string to mean "leave unchanged", mirroring the
     // serial menu's "********" default.
@@ -421,6 +436,16 @@ private:
         wh["failed"] = hook.failedCount();
         wh["dropped"] = hook.droppedCount();
         wh["pending"] = hook.pending();
+
+        JsonObject clk = d.createNestedObject("clock");
+        clk["ntpServer"] = config.clock.ntpServer;
+        clk["timezoneMinutes"] = config.clock.timezoneMinutes;
+        clk["autoSync"] = config.clock.autoSync;
+        clk["valid"] = timeIsValid();
+        {
+            char now[32]; timeNowString(now, sizeof(now));
+            clk["now"] = now;
+        }
 
         JsonObject loc = d.createNestedObject("location");
         loc["latitude"] = config.location.latitude;
@@ -507,6 +532,13 @@ private:
             if (g.containsKey("minLevel")) config.log.minLevel = clampInt(g["minLevel"], 0, 3);
             if (g.containsKey("heartbeatSec")) config.log.heartbeatSec = clampInt(g["heartbeatSec"], 0, 3600);
             needsRestart = true;
+        }
+        if (d.containsKey("clock"))
+        {
+            JsonObject c = d["clock"];
+            if (c.containsKey("ntpServer")) copyStr(config.clock.ntpServer, sizeof(config.clock.ntpServer), c["ntpServer"]);
+            if (c.containsKey("timezoneMinutes")) config.clock.timezoneMinutes = (int16_t)clampInt(c["timezoneMinutes"], -840, 840);
+            if (c.containsKey("autoSync")) config.clock.autoSync = c["autoSync"];
         }
         if (d.containsKey("webhook"))
         {
@@ -674,6 +706,18 @@ summary::-webkit-details-marker{opacity:.5}
       </div>
     </fieldset>
 
+    <fieldset><legend>Clock / NTP <span class="meta">applies immediately</span></legend>
+      <div class="row">
+        <div><label><input type="checkbox" id="c_clkauto" style="width:auto"> Sync at boot</label></div>
+        <div><label>NTP server</label><input id="c_clkntp" placeholder="pool.ntp.org"></div>
+        <div><label>UTC offset (minutes)</label><input id="c_clktz" type="number" min="-840" max="840" step="15"></div>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <button id="clksync" type="button">Sync now</button>
+        <span class="meta" id="clkstate" style="flex:1"></span>
+      </div>
+    </fieldset>
+
     <fieldset><legend>Webhook <span class="meta">applies immediately</span></legend>
       <div class="warn">The token is sent by the gateway to <em>your</em> endpoint as <code>Authorization: Bearer &lt;token&gt;</code> so your server can verify the POST came from here. You choose the value; it is never readable back.</div>
       <div class="row">
@@ -786,6 +830,11 @@ function fill(c){
   g('c_logen').checked=c.log.enabled; g('c_logsrv').value=c.log.server;
   g('c_logport').value=c.log.port; g('c_loglvl').value=c.log.minLevel;
   g('c_loghb').value=c.log.heartbeatSec;
+  const k=c.clock||{};
+  g('c_clkauto').checked=!!k.autoSync; g('c_clkntp').value=k.ntpServer||'';
+  g('c_clktz').value=k.timezoneMinutes||0;
+  g('clkstate').textContent = k.valid ? ('clock set — '+k.now)
+      : 'clock NOT set — webhook ts is uptime, not a real time';
   const w=c.webhook||{};
   g('c_when').checked=!!w.enabled; g('c_whurl').value=w.url||'';
   g('c_whtokset').textContent = w.hasToken
@@ -815,6 +864,8 @@ g('cfgsave').onclick=async()=>{
           basePrefix:g('c_mqpfx').value},
     log:{enabled:g('c_logen').checked,server:g('c_logsrv').value,port:parseInt(g('c_logport').value,10),
          minLevel:parseInt(g('c_loglvl').value,10),heartbeatSec:parseInt(g('c_loghb').value,10)},
+    clock:{ntpServer:g('c_clkntp').value,timezoneMinutes:parseInt(g('c_clktz').value,10)||0,
+           autoSync:g('c_clkauto').checked},
     webhook:{enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
              includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}
   };
@@ -825,6 +876,12 @@ g('cfgsave').onclick=async()=>{
       : 'saved — restart required for radio, WiFi, MQTT and logging changes';
   if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value='';
             g('whreveal').style.display='none'; g('whplain').value=''; cfgLoaded=false; }
+};
+g('clksync').onclick=async()=>{
+  g('clkstate').textContent='syncing...';
+  const err=await post('/api/timesync');
+  if(err){ g('clkstate').textContent='sync failed: '+err; return; }
+  try{ fill(await (await fetch('/api/config')).json()); }catch(e){}
 };
 g('whgen').onclick=()=>{
   // getRandomValues works in insecure contexts; crypto.subtle does not, which is
