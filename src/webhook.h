@@ -36,8 +36,12 @@ struct WebhookEvent
 class WebhookSender
 {
 public:
+    typedef void (*LogFn)(const char *msg);
+
     WebhookSender(GatewayConfig &cfg)
-        : config(cfg), head(0), tail(0), delivered(0), failed(0), dropped(0) {}
+        : config(cfg), head(0), tail(0), delivered(0), failed(0), dropped(0), logger(NULL) {}
+
+    void setLogger(LogFn fn) { logger = fn; }
 
     bool configured() const
     {
@@ -46,9 +50,11 @@ public:
 
     void enqueue(const char *from, const char *text, int rssi, bool isDirect)
     {
-        if (!configured()) return;
-        if (isDirect && !config.webhook.includeDirect) return;
-        if (!isDirect && !config.webhook.includePublic) return;
+        const char *kind = isDirect ? "direct" : "public";
+        if (!configured()) { note("hook skip %s: not configured", kind); return; }
+        if (isDirect && !config.webhook.includeDirect) { note("hook skip direct: filtered off"); return; }
+        if (!isDirect && !config.webhook.includePublic) { note("hook skip public: filtered off"); return; }
+        note("hook queue %s from=%s len=%u", kind, from, (unsigned)strlen(text));
 
         int next = (head + 1) % WEBHOOK_QUEUE_SLOTS;
         if (next == tail)
@@ -77,6 +83,7 @@ public:
         WebhookEvent e = queue[tail];
         int code = post(e);
         if (code >= 200 && code < 300) delivered++; else failed++;
+        note("hook post %s status=%d %s", e.isDirect ? "direct" : "public", code, lastErr);
         tail = (tail + 1) % WEBHOOK_QUEUE_SLOTS;
     }
 
@@ -108,6 +115,18 @@ private:
     int head, tail;
     uint32_t delivered, failed, dropped;
     char lastErr[96] = {0};
+    LogFn logger;
+
+    void note(const char *fmt, ...)
+    {
+        if (!logger) return;
+        char buf[160];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        logger(buf);
+    }
 
     static const char *httpcError(int code)
     {

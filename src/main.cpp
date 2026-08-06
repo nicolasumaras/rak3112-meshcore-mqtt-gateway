@@ -325,6 +325,7 @@ void setup()
     serialConfig->begin();
 
     webHook = new WebhookSender(config);
+    webHook->setLogger([](const char *m) { if (sysLog) sysLog->log(LOG_INFO, m); });
 
     // Remote syslog, if an operator configured a collector.
     sysLog = new SyslogClient(config);
