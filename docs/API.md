@@ -156,8 +156,20 @@ Authorization: Bearer <token>      (only if a token is set)
 
 ```json
 {"node":"MQTT-Gateway","from":"Pager One","text":"hello",
- "rssi":-48,"direct":true,"ts":1600000123}
+ "rssi":-48,"direct":true,"ts":1600000123,
+ "id":42,"uptime":3600,"clockValid":true}
 ```
+
+| Field | Meaning |
+|---|---|
+| `id` | Strictly increasing per delivery. **Use this to deduplicate**, not the text. Resets to 0 on reboot — pair it with `uptime` if you need to survive restarts. |
+| `uptime` | Seconds since boot. Always meaningful. |
+| `clockValid` | `false` when NTP has not synced, in which case `ts` is `uptime`, not an epoch. |
+
+> **Do not deduplicate on `from` + `text`.** Repeated identical messages are normal
+> and expected — a node sending `weather` three times is three requests, not one
+> repeated. Keying on content will silently swallow real traffic; that exact
+> mistake made a bot look like it was ignoring most messages.
 
 ### Delivery behaviour
 

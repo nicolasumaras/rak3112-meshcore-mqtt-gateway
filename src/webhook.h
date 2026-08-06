@@ -31,6 +31,9 @@ struct WebhookEvent
     int16_t rssi;
     bool isDirect;
     uint32_t ts;
+    uint32_t id;        // strictly increasing per delivery
+    uint32_t uptime;    // seconds since boot, always meaningful
+    bool clockValid;    // false when ts is uptime, not a real epoch
 };
 
 class WebhookSender
@@ -68,8 +71,11 @@ public:
         strncpy(e.text, text, sizeof(e.text) - 1); e.text[sizeof(e.text) - 1] = '\0';
         e.rssi = (int16_t)rssi;
         e.isDirect = isDirect;
+        e.uptime = millis() / 1000;
         e.ts = (uint32_t)time(nullptr);
-        if (e.ts < 1600000000UL) e.ts = millis() / 1000;
+        e.clockValid = (e.ts >= 1600000000UL);
+        if (!e.clockValid) e.ts = e.uptime;
+        e.id = ++seq;
         head = next;
     }
 
@@ -83,7 +89,8 @@ public:
         WebhookEvent e = queue[tail];
         int code = post(e);
         if (code >= 200 && code < 300) delivered++; else failed++;
-        note("hook post %s status=%d %s", e.isDirect ? "direct" : "public", code, lastErr);
+        note("hook post %s id=%lu status=%d %s", e.isDirect ? "direct" : "public",
+             (unsigned long)e.id, code, lastErr);
         tail = (tail + 1) % WEBHOOK_QUEUE_SLOTS;
     }
 
@@ -98,7 +105,11 @@ public:
         strncpy(e.text, "webhook test from RAK3112 gateway", sizeof(e.text) - 1);
         e.rssi = 0;
         e.isDirect = false;
+        e.uptime = millis() / 1000;
         e.ts = (uint32_t)time(nullptr);
+        e.clockValid = (e.ts >= 1600000000UL);
+        if (!e.clockValid) e.ts = e.uptime;
+        e.id = ++seq;
         return post(e);
     }
 
@@ -114,6 +125,7 @@ private:
     WebhookEvent queue[WEBHOOK_QUEUE_SLOTS];
     int head, tail;
     uint32_t delivered, failed, dropped;
+    uint32_t seq = 0;
     char lastErr[96] = {0};
     LogFn logger;
 
@@ -156,6 +168,13 @@ private:
         d["rssi"] = e.rssi;
         d["direct"] = e.isDirect;
         d["ts"] = e.ts;
+        // Repeated identical texts from the same node are normal - "weather"
+        // twice is two requests, not a duplicate. Receivers need something
+        // unambiguous to key on, and ts alone is not it: without NTP it is an
+        // uptime counter, and it resets on reboot.
+        d["id"] = e.id;
+        d["uptime"] = e.uptime;
+        d["clockValid"] = e.clockValid;
         String body;
         serializeJson(d, body);
 
