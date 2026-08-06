@@ -24,10 +24,30 @@ Initializing radio... success!
 Transmit is confirmed too — the built-in `t` self-test sends successfully and the radio
 returns to RX.
 
-**Still unproven: everything involving a second device or a network.** No other MeshCore node
-was in range, so over-the-air RX is untested, and WiFi/MQTT have not been configured — so
-neither bridging direction has been exercised. [#10](../../issues/10), [#12](../../issues/12)
-and [#13](../../issues/13) remain open.
+**MQTT → mesh is verified end to end.** With WiFi and MQTT configured, publishing to
+`{prefix}/commands/send` produces a real LoRa transmission:
+
+```
+[serial] Forwarding MQTT message to LoRa (18 bytes)
+[serial] 📤 LoRa TX: 18 bytes  ✓ Sent successfully
+```
+
+That is the capability the port exists for — one RAK3112 repeating *and* bridging, with no
+external host.
+
+**Still unproven: anything requiring a second radio.** No other MeshCore node has been in
+range, so nothing has ever been received over the air (`packetsReceived: 0`). Mesh → MQTT is
+proven only for gateway-generated telemetry (`status`, `stats`, `neighbors`), not for a
+bridged LoRa packet. [#10](../../issues/10) and [#13](../../issues/13) remain open.
+
+> **Restart after enabling MQTT.** `setup()` only builds the MQTT handler when MQTT is enabled
+> *at boot*, so enabling it at runtime silently does nothing — commands appear on the broker
+> and the gateway ignores them. The Save-time "quick test" misleads here, since it connects
+> over a separate code path. Details in [#12](../../issues/12).
+
+> **Mind what you publish.** The gateway's status payload includes its configured coordinates
+> and LAN IP. Harmless on a private broker; on a public one it is world-readable.
+> See [#19](../../issues/19).
 
 Bring-up also turned up a genuine **upstream** bug affecting all boards, not just this port —
 every transmit produced a phantom zero-byte receive, which with MQTT enabled would publish an
