@@ -124,6 +124,8 @@ public:
         advertSeq = p.getUInt("advseq", 0);
         p.end();
 
+        loadContacts();
+
         Serial.print(F("  MeshCore public key: "));
         for (int i = 0; i < 8; ++i) Serial.printf("%02X", pubKey[i]);
         Serial.println(F("..."));
@@ -291,6 +293,45 @@ public:
         push(m);
     }
 
+    // Contacts must survive reboots: a direct message can only be decrypted if
+    // we already hold the sender's public key, and MeshCore nodes only
+    // re-advertise periodically. Without this, every restart silently drops
+    // inbound direct messages until the peer happens to advertise again.
+    void saveContacts()
+    {
+        Preferences p;
+        p.begin("mc_ident", false);
+        p.putBytes("contacts", contacts, sizeof(contacts));
+        p.end();
+    }
+
+    void loadContacts()
+    {
+        Preferences p;
+        p.begin("mc_ident", true);
+        size_t got = p.getBytes("contacts", contacts, sizeof(contacts));
+        p.end();
+        if (got != sizeof(contacts))
+        {
+            memset(contacts, 0, sizeof(contacts));
+            return;
+        }
+        int n = 0;
+        for (int i = 0; i < MC_MAX_CONTACTS; ++i)
+        {
+            if (contacts[i].used) n = i + 1;
+        }
+        contactCount = n;
+        if (n) Serial.printf("  Restored %d MeshCore contact(s)\n", n);
+    }
+
+    void forgetContacts()
+    {
+        memset(contacts, 0, sizeof(contacts));
+        contactCount = 0;
+        saveContacts();
+    }
+
     uint32_t nextAdvertSeq()
     {
         Preferences p;
@@ -430,6 +471,7 @@ private:
         strncpy(c->name, nm, sizeof(c->name) - 1);
         c->lastAdvert = ts;
         c->lastRssi = (int16_t)rssi;
+        saveContacts();
         return true;
     }
 
