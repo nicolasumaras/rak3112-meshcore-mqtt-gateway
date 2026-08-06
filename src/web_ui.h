@@ -260,6 +260,19 @@ private:
         server.send(200, "application/json", out);
     }
 
+    // Non-reversible fingerprint so an operator can confirm the device holds the
+    // same token as their receiver without it ever being readable back.
+    void tokenFingerprint(char *out, size_t n)
+    {
+        if (config.webhook.token[0] == '\0') { snprintf(out, n, "-"); return; }
+        SHA256 sha;
+        uint8_t h[32];
+        sha.reset();
+        sha.update((const uint8_t *)config.webhook.token, strlen(config.webhook.token));
+        sha.finalize(h, sizeof(h));
+        snprintf(out, n, "%02x%02x%02x%02x", h[0], h[1], h[2], h[3]);
+    }
+
     void handleGetWebhook()
     {
         if (!authed()) return;
@@ -267,6 +280,11 @@ private:
         d["enabled"] = config.webhook.enabled;
         d["url"] = config.webhook.url;
         d["hasToken"] = strlen(config.webhook.token) > 0;
+        {
+            char fp[16]; tokenFingerprint(fp, sizeof(fp));
+            d["tokenLength"] = (int)strlen(config.webhook.token);
+            d["tokenFingerprint"] = fp;
+        }
         d["includePublic"] = config.webhook.includePublic;
         d["includeDirect"] = config.webhook.includeDirect;
         d["delivered"] = hook.deliveredCount();
@@ -369,6 +387,11 @@ private:
         wh["enabled"] = config.webhook.enabled;
         wh["url"] = config.webhook.url;
         wh["hasToken"] = strlen(config.webhook.token) > 0;
+        {
+            char fp[16]; tokenFingerprint(fp, sizeof(fp));
+            wh["tokenLength"] = (int)strlen(config.webhook.token);
+            wh["tokenFingerprint"] = fp;
+        }
         wh["includePublic"] = config.webhook.includePublic;
         wh["includeDirect"] = config.webhook.includeDirect;
         wh["delivered"] = hook.deliveredCount();
@@ -643,7 +666,7 @@ summary::-webkit-details-marker{opacity:.5}
         <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
       </div>
       <div id="whreveal" style="display:none;margin-top:.6rem">
-        <div class="warn"><strong>Copy this now.</strong> It is shown once and cannot be read back from the gateway. Give it to your receiving endpoint, then press Save settings.</div>
+        <div class="warn"><strong>Copy this now.</strong> It is shown once and cannot be read back from the gateway. Give it to your receiving endpoint. <strong>Send test delivery saves it for you</strong> — the gateway always tests with its stored token, never the one typed here.</div>
         <div style="display:flex;gap:.4rem">
           <input id="whplain" readonly style="flex:1;font-family:ui-monospace,monospace;font-size:.8rem">
           <button id="whcopy" type="button">Copy</button>
@@ -742,12 +765,14 @@ function fill(c){
   g('c_loghb').value=c.log.heartbeatSec;
   const w=c.webhook||{};
   g('c_when').checked=!!w.enabled; g('c_whurl').value=w.url||'';
-  g('c_whtokset').textContent=w.hasToken?'(set)':'(not set)';
+  g('c_whtokset').textContent = w.hasToken
+      ? ('set · '+w.tokenLength+' chars · fp '+w.tokenFingerprint) : '(not set)';
   g('c_whpub').checked=w.includePublic!==false; g('c_whdir').checked=w.includeDirect!==false;
+  lastSavedUrl=w.url||'';
   g('whstats').textContent='delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+
                            ' · dropped '+(w.dropped||0)+' · pending '+(w.pending||0);
 }
-let cfgLoaded=false;
+let cfgLoaded=false, lastSavedUrl=null;
 g('cfgcard').addEventListener('toggle',async e=>{
   if(!e.target.open||cfgLoaded) return;
   try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true;
@@ -799,9 +824,22 @@ g('whcopy').onclick=async()=>{
   catch(e){ g('whplain').select(); g('cfgstatus').textContent='press Cmd/Ctrl+C to copy'; }
 };
 g('whtest').onclick=async()=>{
+  // The device tests with its STORED token. Testing while an unsaved one sits in
+  // the form sends the old value and the endpoint answers 401 - which reads as
+  // "the token is broken" when it only means "you have not saved yet".
+  if(g('c_whtok').value || g('c_whurl').value !== (lastSavedUrl||g('c_whurl').value)){
+    g('cfgstatus').textContent='saving changes first...';
+    const serr=await post('/api/config',{webhook:{
+      enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
+      includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}});
+    if(serr){ g('cfgstatus').textContent='could not save: '+serr; return; }
+    g('c_whtok').value='';
+  }
   g('cfgstatus').textContent='sending test delivery...';
   const err=await post('/api/webhook/test');
   g('cfgstatus').textContent = err ? ('test failed: '+err) : 'test delivered — your endpoint returned 2xx';
+  cfgLoaded=false; refresh();
+  try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true; }catch(e){}
 };
 g('cfgrestart').onclick=async()=>{
   if(!confirm('Restart the gateway now? The page will be unreachable for a few seconds.')) return;
