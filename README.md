@@ -13,17 +13,28 @@ with no external Pi or bridge process.
 
 ## Status
 
-**Phases 0-2 done — the port builds.** `pio run -e rak3112_mqtt` produces a flashable
-`firmware.bin` (RAM 15.5%, Flash 28.4%).
+**The radio works on real hardware.** Flashed to a RAK3112 (ESP32-S3 rev v0.2, 16 MB flash,
+8 MB PSRAM) and the SX1262 came up first try on the ported pin map:
 
-**It has never been run on hardware.** Phases 3-5 (radio bring-up, end-to-end MQTT
-validation, soak) are all still open. Treat this as "ready to flash and find out," not
-"working."
+```
+Initializing radio... success!
+✓ Radio listening for packets
+```
 
-Verified by inspection of the built image: the **SX1262** path compiled, not SX1276
-(`nm` shows zero `SX1276` symbols), and all eight pin values compiled through as intended
-via negative-controlled `static_assert`s. See
-[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md#what-is-and-isnt-proven) for the full
+Transmit is confirmed too — the built-in `t` self-test sends successfully and the radio
+returns to RX.
+
+**Still unproven: everything involving a second device or a network.** No other MeshCore node
+was in range, so over-the-air RX is untested, and WiFi/MQTT have not been configured — so
+neither bridging direction has been exercised. [#10](../../issues/10), [#12](../../issues/12)
+and [#13](../../issues/13) remain open.
+
+Bring-up also turned up a genuine **upstream** bug affecting all boards, not just this port —
+every transmit produced a phantom zero-byte receive, which with MQTT enabled would publish an
+empty payload to the broker on every transmitted or forwarded packet. Found, fixed and
+verified on hardware: [#17](../../issues/17).
+
+See [docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md#what-is-and-isnt-proven) for the full
 proven/unproven split.
 
 - **[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md)** — build, flash, and failure triage

@@ -2,8 +2,30 @@
 
 ## Status of this firmware
 
-**Compiles and links clean. Never run on hardware.** Everything below the build step is
-unverified — see [What is and isn't proven](#what-is-and-isnt-proven).
+**Flashed and running on a real RAK3112. The radio initializes and transmits.** What is not
+yet proven is anything needing a second device or a network — see
+[What is and isn't proven](#what-is-and-isnt-proven).
+
+### Hardware this was verified on
+
+```
+Chip           ESP32-S3 (QFN56) rev v0.2
+Features       WiFi, BLE, Embedded PSRAM 8MB (AP_3v3)
+Crystal        40MHz
+USB mode       USB-Serial/JTAG
+Flash          16MB, quad (set in eFuse), 3.3V
+Port           /dev/cu.usbmodem*  (VID:PID 303A:1001)
+```
+
+Two mismatches with the build config, both deliberate and both harmless:
+
+- The chip has **8 MB PSRAM**; the build does not enable it. Upstream MeshCore does not
+  either. The firmware uses 15.5% of internal RAM, so there is no pressure to change this.
+- The chip has **16 MB flash**; the build uses the 8 MB `esp32-s3-devkitc-1` layout, so the
+  upper 8 MB is unused. Again matching upstream MeshCore.
+
+Both are worth revisiting only if you actually run short of space. Changing partition layout
+during bring-up adds variables at exactly the wrong moment.
 
 ## Build
 
@@ -109,15 +131,39 @@ This is upstream behavior, not something this port introduced.
   fail the build — so the pass is meaningful rather than vacuous. The probe was removed
   afterwards; `src/main.cpp` is byte-identical to its pre-probe state.
 
-**Not verified — no RAK3112 hardware was involved:**
+**Verified on hardware:**
 
-- That the radio initializes on real silicon.
-- That LoRa TX or RX works.
-- That MQTT connects, or that either bridging direction functions.
-- That the USB CDC console actually enumerates.
-- Whether GPIO14 matters on real hardware.
+- Flashes successfully; `Hash of data verified`.
+- **The SX1262 initializes** — `Initializing radio... success!`, then
+  `✓ Radio listening for packets`. The ported pin map and the 1.8 V TCXO setting are
+  correct on real silicon.
+- **GPIO14/VEXT is not needed for the radio.** It was never driven and the radio works,
+  confirming the inference drawn from upstream MeshCore's software behaviour.
+- **The USB CDC console enumerates** and the interactive menu responds — so the
+  `ARDUINO_USB_CDC_ON_BOOT=1` decision was right.
+- **Transmit works** — the `t` self-test reports `LoRa TX: 16 bytes / ✓ Sent successfully`,
+  and the radio returns to `RX ACTIVE` afterwards.
+- The radio reports `Radio Initialized: YES` and stays in RX between operations.
 
-Phases 3-5 in [PORTING-PLAN.md](PORTING-PLAN.md) exist to close exactly these gaps.
+**Still not verified:**
+
+- **Over-the-air RX.** No second MeshCore node was in range, so no real packet has ever been
+  received. The RX path is *armed* and demonstrably interrupt-driven, but has not carried a
+  real packet.
+- **That a transmitted packet is actually receivable.** TX is confirmed only from the
+  sender's side — the radio accepted and sent it. Nothing has heard it.
+- **MQTT, in either direction.** WiFi and MQTT are unconfigured; the boot banner reports
+  `WiFi: Disabled` / `MQTT: Disabled`.
+- **Sustained operation** — reconnect handling, heap behaviour over days.
+
+Phases 3-5 in [PORTING-PLAN.md](PORTING-PLAN.md) close exactly these gaps. All of them need
+either a second radio or network credentials.
+
+### One reading not to chase
+
+`Current RSSI: -5 dBm` in the debug output is **not** a noise floor. RadioLib's `getRSSI()`
+on SX126x returns the *last received packet's* RSSI, and no packet has ever been received, so
+the value is uninitialized. It is not evidence of a stuck receiver.
 
 ## Upstreaming
 
