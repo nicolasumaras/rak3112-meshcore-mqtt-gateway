@@ -1,5 +1,7 @@
 # RAK3112 MeshCore MQTT Gateway
 
+[![Build (PlatformIO)](https://github.com/nicolasumaras/rak3112-meshcore-mqtt-gateway/actions/workflows/build.yml/badge.svg)](https://github.com/nicolasumaras/rak3112-meshcore-mqtt-gateway/actions/workflows/build.yml)
+
 Porting [`jmead/Meshcore-Repeater-MQTT-Gateway`](https://github.com/jmead/Meshcore-Repeater-MQTT-Gateway)
 to the **RAK3112** (ESP32-S3 + SX1262).
 
