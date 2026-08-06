@@ -367,6 +367,11 @@ void setupLoRa()
                           txPower, RAK3112_MAX_TX_POWER);
             txPower = RAK3112_MAX_TX_POWER;
         }
+        // Preamble 16, not the 8 the other boards here use: meshcore-dev/MeshCore
+        // initialises SX126x with preamble 16 (CustomSX1262.h), and its
+        // RadioLibWrappers::preambleLengthForSF() yields 32 for SF<=8 else 16.
+        // Matching it is required to interoperate with real MeshCore nodes.
+        uint16_t preamble = (config.lora.spreadingFactor <= 8) ? 32 : 16;
         state = radio.begin(
             config.lora.frequency,
             config.lora.bandwidth,
@@ -374,9 +379,10 @@ void setupLoRa()
             config.lora.codingRate,
             config.lora.syncWord,
             txPower,
-            8,      // preamble length
+            preamble,
             1.8F,   // DIO3 TCXO voltage
             false); // useRegulatorLDO = false -> DC-DC
+        Serial.printf("\n  (MeshCore-compatible preamble: %u) ", preamble);
     }
     if (state == RADIOLIB_ERR_NONE)
     {
