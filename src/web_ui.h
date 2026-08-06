@@ -314,9 +314,14 @@ private:
             server.send(400, "application/json", "{\"error\":\"webhook not configured\"}");
             return;
         }
-        bool ok = hook.sendTest();
-        server.send(ok ? 200 : 502, "application/json",
-                    ok ? "{\"ok\":true}" : "{\"error\":\"endpoint did not accept the delivery\"}");
+        int code = hook.sendTest();
+        StaticJsonDocument<256> d;
+        bool ok = (code >= 200 && code < 300);
+        d["ok"] = ok;
+        d["status"] = code;
+        d[ok ? "detail" : "error"] = hook.lastError();
+        String out; serializeJson(d, out);
+        server.send(ok ? 200 : 502, "application/json", out);
     }
 
     // Existing secrets are never sent to the browser - only whether one is set.
