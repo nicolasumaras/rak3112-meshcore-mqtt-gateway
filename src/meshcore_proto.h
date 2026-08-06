@@ -48,6 +48,7 @@
 #define MC_PT_TXT_MSG   0x02
 #define MC_PT_ACK       0x03
 #define MC_PT_ADVERT    0x04
+#define MC_PT_PATH      0x08
 #define MC_PT_GRP_TXT   0x05
 
 #define MC_RT_FLOOD     0x01
@@ -262,9 +263,13 @@ public:
         const uint8_t *payload = data + ps;
         size_t plen = len - ps;
 
+        bool isFlood = (route == 0x00 || route == 0x01);
+        const uint8_t *path = data + off + 1;
+
         if (ptype == MC_PT_ADVERT) return handleAdvert(payload, plen, rssi);
         if (ptype == MC_PT_GRP_TXT) return handleGroupText(payload, plen, rssi);
-        if (ptype == MC_PT_TXT_MSG) return handleDirectText(payload, plen, rssi);
+        if (ptype == MC_PT_TXT_MSG)
+            return handleDirectText(payload, plen, rssi, isFlood, pathLen, path);
         return false;
     }
 
@@ -495,7 +500,8 @@ private:
         return true;
     }
 
-    bool handleDirectText(const uint8_t *p, size_t len, int rssi)
+    bool handleDirectText(const uint8_t *p, size_t len, int rssi,
+                          bool isFlood, uint8_t rxPathLen, const uint8_t *rxPath)
     {
         if (len < 2 + MC_CIPHER_MAC_SIZE + 16) return false;
         if (p[0] != pubKey[0]) return false;   // not addressed to us
@@ -521,7 +527,15 @@ private:
             copyCString(msg.text, sizeof(msg.text), (const char *)&plain[5], n - 5);
             push(msg);
 
-            sendAck(plain, n, contacts[i].pubKey);
+            // A flood-routed message means the sender has no route back yet, so
+            // MeshCore answers with a PATH return that carries the path this
+            // message travelled AND embeds the ACK. That is what lets the peer
+            // switch from flooding to direct routing. A plain ACK still clears
+            // the "transmit failed" state but teaches the sender nothing.
+            if (isFlood)
+                sendPathReturn(plain, n, contacts[i], secret, rxPathLen, rxPath);
+            else
+                sendAck(plain, n, contacts[i].pubKey);
             return true;
         }
         return false;
@@ -532,21 +546,71 @@ private:
     // SHA256(plaintext[0 .. 5+text_len] || sender_pub_key), which is what the
     // sender compares against. Bytes 4 and 5 are an attempt marker and a random
     // byte, present only to keep the packet hash unique.
-    void sendAck(const uint8_t *plain, int plainLen, const uint8_t *senderPub)
+    void computeAckHash(const uint8_t *plain, int plainLen, const uint8_t *senderPub,
+                        uint8_t out[6])
     {
-        if (!sender) return;
-
         int textLen = 0;
         while (5 + textLen < plainLen && plain[5 + textLen] != '\0') textLen++;
 
-        uint8_t ackHash[6];
         SHA256 sha;
         sha.reset();
         sha.update(plain, 5 + textLen);
         sha.update(senderPub, MC_PUB_KEY_SIZE);
-        sha.finalize(ackHash, 4);
-        ackHash[4] = (5 + textLen + 1 < plainLen) ? plain[5 + textLen + 1] : 0;
-        ackHash[5] = (uint8_t)(esp_random() & 0xFF);
+        sha.finalize(out, 4);
+        out[4] = (5 + textLen + 1 < plainLen) ? plain[5 + textLen + 1] : 0;
+        out[5] = (uint8_t)(esp_random() & 0xFF);
+    }
+
+    // Reply to a flood-routed direct message with a PATH return: tells the peer
+    // the route back to us and carries the ACK as its "extra" payload.
+    //
+    //   payload = [dest_hash][src_hash][ encryptThenMAC(
+    //                 [path_len][path...][extra_type=ACK][ack_hash:6] ) ]
+    void sendPathReturn(const uint8_t *plain, int plainLen, const MCContact &to,
+                        const uint8_t *secret, uint8_t rxPathLen, const uint8_t *rxPath)
+    {
+        if (!sender) return;
+
+        uint8_t ackHash[6];
+        computeAckHash(plain, plainLen, to.pubKey, ackHash);
+
+        uint8_t hashSize = (rxPathLen >> 6) + 1;
+        uint8_t hashCount = rxPathLen & 63;
+        size_t pathBytes = (size_t)hashCount * hashSize;
+
+        uint8_t data[96];
+        size_t d = 0;
+        if (1 + pathBytes + 1 + sizeof(ackHash) > sizeof(data)) return;
+        data[d++] = rxPathLen;
+        memcpy(&data[d], rxPath, pathBytes); d += pathBytes;
+        data[d++] = MC_PT_ACK;                       // extra_type
+        memcpy(&data[d], ackHash, sizeof(ackHash)); d += sizeof(ackHash);
+
+        uint8_t payload[160];
+        int pl = 0;
+        payload[pl++] = to.pubKey[0];   // dest hash
+        payload[pl++] = pubKey[0];      // src hash
+        int enc = encryptThenMAC(secret, &payload[pl], data, d);
+        if (enc <= 0) return;
+        pl += enc;
+
+        uint8_t frame[200];
+        size_t n = assemble(frame, sizeof(frame), MC_PT_PATH, MC_RT_FLOOD, payload, pl);
+        if (n == 0) return;
+
+        delay(200);   // TXT_ACK_DELAY
+        if (sender(frame, n))
+        {
+            Serial.printf("   ↩ PATH return sent (%u path hop(s), ACK embedded)\n", hashCount);
+        }
+    }
+
+    void sendAck(const uint8_t *plain, int plainLen, const uint8_t *senderPub)
+    {
+        if (!sender) return;
+
+        uint8_t ackHash[6];
+        computeAckHash(plain, plainLen, senderPub, ackHash);
 
         uint8_t frame[32];
         size_t n = assemble(frame, sizeof(frame), MC_PT_ACK, MC_RT_FLOOD, ackHash, sizeof(ackHash));
