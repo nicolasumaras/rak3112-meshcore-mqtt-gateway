@@ -25,6 +25,7 @@
 #include "mqtt_handler.h"
 #include "serial_config.h"
 #include "syslog_client.h"
+#include "webhook.h"
 #ifdef RAK_3112
 #include "meshcore_proto.h"
 // MeshCore's default "Public" channel PSK, base64 izOH6cXN6mrJ5e26oRXNcg==
@@ -33,6 +34,7 @@ static const uint8_t MC_PUBLIC_PSK[16] = {
     0xC9, 0xE5, 0xED, 0xBA, 0xA1, 0x15, 0xCD, 0x72};
 MeshCoreProto meshProto;
 static bool webSendBridge(const uint8_t *data, size_t len);
+static void meshRecvBridge(const char *from, const char *text, int rssi, bool isDirect);
 #include "web_ui.h"
 MeshWebUI *webUI = nullptr;
 #endif
@@ -80,6 +82,7 @@ SettingsManager settingsManager;
 MQTTHandler *mqttHandler = nullptr;
 ConfigMenu *serialConfig = nullptr;
 SyslogClient *sysLog = nullptr;
+WebhookSender *webHook = nullptr;
 unsigned long lastHeartbeat = 0;
 
 // Statistics
@@ -321,6 +324,8 @@ void setup()
     serialConfig->setOnExitCallback(exitConfigMode);
     serialConfig->begin();
 
+    webHook = new WebhookSender(config);
+
     // Remote syslog, if an operator configured a collector.
     sysLog = new SyslogClient(config);
     sysLog->begin();
@@ -338,12 +343,13 @@ void setup()
     meshProto.begin(config.repeater.nodeName);
     meshProto.setChannelPsk(MC_PUBLIC_PSK, sizeof(MC_PUBLIC_PSK));
     meshProto.setSender(webSendBridge);   // so received direct messages get ACKed
+    meshProto.setReceiver(meshRecvBridge);
     Serial.printf("  MeshCore public channel hash: 0x%02X\n", meshProto.channelHash());
 
     // Web UI needs WiFi, which only comes up as part of the MQTT handler.
     if (config.wifi.enabled && WiFi.status() == WL_CONNECTED)
     {
-        webUI = new MeshWebUI(config, settingsManager, meshProto, webSendBridge);
+        webUI = new MeshWebUI(config, settingsManager, meshProto, *webHook, webSendBridge);
         if (webUI->begin())
         {
             Serial.print(F("✓ MeshCore web UI: http://"));
@@ -390,6 +396,7 @@ void loop()
     // Check for serial commands
 #ifdef RAK_3112
     if (webUI) webUI->loop();
+    if (webHook) webHook->loop();
 #endif
 
     if (!configMode)
@@ -1014,6 +1021,14 @@ bool sendLoRaPacket(const uint8_t *data, size_t length)
 static bool webSendBridge(const uint8_t *data, size_t len)
 {
     return sendLoRaPacket(data, len);
+}
+
+// Fan out decoded inbound messages. Queued, never posted inline - see webhook.h.
+static void meshRecvBridge(const char *from, const char *text, int rssi, bool isDirect)
+{
+    if (webHook) webHook->enqueue(from, text, rssi, isDirect);
+    if (sysLog) sysLog->logf(LOG_INFO, "msg %s from=%s rssi=%d",
+                             isDirect ? "direct" : "public", from, rssi);
 }
 #endif
 

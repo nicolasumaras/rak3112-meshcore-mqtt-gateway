@@ -21,14 +21,17 @@
 #include "config.h"
 #include "settings_manager.h"
 #include "meshcore_proto.h"
+#include "webhook.h"
 
 typedef bool (*WebSendFn)(const uint8_t *data, size_t len);
 
 class MeshWebUI
 {
 public:
-    MeshWebUI(GatewayConfig &cfg, SettingsManager &sm, MeshCoreProto &proto, WebSendFn sendFn)
-        : server(80), config(cfg), settings(sm), mesh(proto), send(sendFn), started(false) {}
+    MeshWebUI(GatewayConfig &cfg, SettingsManager &sm, MeshCoreProto &proto,
+              WebhookSender &wh, WebSendFn sendFn)
+        : server(80), config(cfg), settings(sm), mesh(proto), hook(wh),
+          send(sendFn), started(false) {}
 
     bool begin()
     {
@@ -46,6 +49,13 @@ public:
         server.on("/api/config", HTTP_GET, [this]() { handleGetConfig(); });
         server.on("/api/config", HTTP_POST, [this]() { handleSetConfig(); });
         server.on("/api/restart", HTTP_POST, [this]() { handleRestart(); });
+        // Public API
+        server.on("/api/contacts", HTTP_GET, [this]() { handleContacts(); });
+        server.on("/api/messages", HTTP_GET, [this]() { handleMessages(); });
+        server.on("/api/messages", HTTP_POST, [this]() { handleSend(); });
+        server.on("/api/webhook", HTTP_GET, [this]() { handleGetWebhook(); });
+        server.on("/api/webhook", HTTP_POST, [this]() { handleSetWebhook(); });
+        server.on("/api/webhook/test", HTTP_POST, [this]() { handleTestWebhook(); });
         server.onNotFound([this]() { server.send(404, "text/plain", "not found"); });
         server.begin();
         started = true;
@@ -64,6 +74,7 @@ private:
     GatewayConfig &config;
     SettingsManager &settings;
     MeshCoreProto &mesh;
+    WebhookSender &hook;
     WebSendFn send;
     bool started;
 
@@ -200,6 +211,107 @@ private:
             return;
         }
         server.send(200, "application/json", "{\"ok\":true}");
+    }
+
+    void handleContacts()
+    {
+        if (!authed()) return;
+        StaticJsonDocument<2048> d;
+        JsonArray a = d.to<JsonArray>();
+        for (int i = 0; i < MC_MAX_CONTACTS; ++i)
+        {
+            if (!mesh.contacts[i].used) continue;
+            JsonObject o = a.createNestedObject();
+            o["id"] = i;
+            o["name"] = mesh.contacts[i].name;
+            o["rssi"] = mesh.contacts[i].lastRssi;
+            char h[8];
+            snprintf(h, sizeof(h), "0x%02X", mesh.contacts[i].pubKey[0]);
+            o["hash"] = h;
+            o["lastAdvert"] = mesh.contacts[i].lastAdvert;
+        }
+        String out; serializeJson(d, out);
+        server.send(200, "application/json", out);
+    }
+
+    void handleMessages()
+    {
+        if (!authed()) return;
+        int limit = server.hasArg("limit") ? server.arg("limit").toInt() : 20;
+        if (limit < 1) limit = 1;
+        if (limit > MC_MAX_MESSAGES) limit = MC_MAX_MESSAGES;
+
+        StaticJsonDocument<4096> d;
+        JsonArray a = d.to<JsonArray>();
+        int n = mesh.messageCount();
+        if (n > limit) n = limit;
+        for (int i = 0; i < n; ++i)
+        {
+            const MCMessage &m = mesh.messageAt(i);
+            JsonObject o = a.createNestedObject();
+            o["from"] = m.from;
+            o["text"] = m.text;
+            o["rssi"] = m.rssi;
+            o["direct"] = m.isDirect;
+            o["outgoing"] = m.outgoing;
+            o["ts"] = m.timestamp;
+        }
+        String out; serializeJson(d, out);
+        server.send(200, "application/json", out);
+    }
+
+    void handleGetWebhook()
+    {
+        if (!authed()) return;
+        StaticJsonDocument<512> d;
+        d["enabled"] = config.webhook.enabled;
+        d["url"] = config.webhook.url;
+        d["hasToken"] = strlen(config.webhook.token) > 0;
+        d["includePublic"] = config.webhook.includePublic;
+        d["includeDirect"] = config.webhook.includeDirect;
+        d["delivered"] = hook.deliveredCount();
+        d["failed"] = hook.failedCount();
+        d["dropped"] = hook.droppedCount();
+        d["pending"] = hook.pending();
+        String out; serializeJson(d, out);
+        server.send(200, "application/json", out);
+    }
+
+    void handleSetWebhook()
+    {
+        if (!authed()) return;
+        StaticJsonDocument<512> d;
+        if (deserializeJson(d, server.arg("plain")) != DeserializationError::Ok)
+        {
+            server.send(400, "application/json", "{\"error\":\"bad json\"}");
+            return;
+        }
+        if (d.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), d["url"]);
+        setSecret(config.webhook.token, sizeof(config.webhook.token), d["token"]);
+        if (d.containsKey("enabled")) config.webhook.enabled = d["enabled"];
+        if (d.containsKey("includePublic")) config.webhook.includePublic = d["includePublic"];
+        if (d.containsKey("includeDirect")) config.webhook.includeDirect = d["includeDirect"];
+        if (config.webhook.url[0] == '\0') config.webhook.enabled = false;
+
+        if (!settings.saveConfig(config))
+        {
+            server.send(500, "application/json", "{\"error\":\"save failed\"}");
+            return;
+        }
+        server.send(200, "application/json", "{\"ok\":true}");
+    }
+
+    void handleTestWebhook()
+    {
+        if (!authed()) return;
+        if (!hook.configured())
+        {
+            server.send(400, "application/json", "{\"error\":\"webhook not configured\"}");
+            return;
+        }
+        bool ok = hook.sendTest();
+        server.send(ok ? 200 : 502, "application/json",
+                    ok ? "{\"ok\":true}" : "{\"error\":\"endpoint did not accept the delivery\"}");
     }
 
     // Existing secrets are never sent to the browser - only whether one is set.

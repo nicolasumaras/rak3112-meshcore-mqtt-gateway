@@ -199,6 +199,16 @@ struct LogConfig {
     uint16_t heartbeatSec;   // periodic heap/counter line; 0 disables
 };
 
+// Outbound webhook for received messages. URL empty = disabled, so the device
+// never posts anywhere an operator did not configure.
+struct WebhookConfig {
+    char url[160];
+    char token[64];    // sent as Authorization: Bearer <token> if set
+    bool enabled;
+    bool includePublic;
+    bool includeDirect;
+};
+
 struct ClockConfig {
     char ntpServer[64];
     int16_t timezoneMinutes; // minutes offset from UTC
@@ -228,6 +238,7 @@ struct GatewayConfig {
     LocationConfig location;
     ClockConfig clock;
     LogConfig log;
+    WebhookConfig webhook;
 };
 
 // Derive a safe MQTT Client ID from the repeater node name
@@ -353,6 +364,12 @@ inline GatewayConfig getDefaultConfig() {
     config.location.longitude = 0.0f;
 
     // Clock defaults
+    config.webhook.url[0] = '\0';
+    config.webhook.token[0] = '\0';
+    config.webhook.enabled = false;
+    config.webhook.includePublic = true;
+    config.webhook.includeDirect = true;
+
     config.log.server[0] = '\0';   // off until an operator sets a host
     config.log.port = 514;
     config.log.enabled = false;

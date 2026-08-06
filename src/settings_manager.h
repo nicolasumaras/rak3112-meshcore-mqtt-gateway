@@ -90,6 +90,12 @@ public:
         prefs.putFloat("loc_lon", config.location.longitude);
 
         // Clock
+        prefs.putString("wh_url", config.webhook.url);
+        prefs.putString("wh_tok", config.webhook.token);
+        prefs.putBool("wh_en", config.webhook.enabled);
+        prefs.putBool("wh_pub", config.webhook.includePublic);
+        prefs.putBool("wh_dir", config.webhook.includeDirect);
+
         prefs.putString("log_srv", config.log.server);
         prefs.putUShort("log_port", config.log.port);
         prefs.putBool("log_en", config.log.enabled);
@@ -234,6 +240,14 @@ public:
         config.location.longitude = prefs.getFloat("loc_lon", 0.0f);
 
         // Clock
+        strncpy(config.webhook.url, prefs.getString("wh_url", "").c_str(), sizeof(config.webhook.url) - 1);
+        config.webhook.url[sizeof(config.webhook.url) - 1] = '\0';
+        strncpy(config.webhook.token, prefs.getString("wh_tok", "").c_str(), sizeof(config.webhook.token) - 1);
+        config.webhook.token[sizeof(config.webhook.token) - 1] = '\0';
+        config.webhook.enabled = prefs.getBool("wh_en", false);
+        config.webhook.includePublic = prefs.getBool("wh_pub", true);
+        config.webhook.includeDirect = prefs.getBool("wh_dir", true);
+
         strncpy(config.log.server, prefs.getString("log_srv", "").c_str(), sizeof(config.log.server) - 1);
         config.log.server[sizeof(config.log.server) - 1] = '\0';
         config.log.port = prefs.getUShort("log_port", 514);

@@ -89,13 +89,17 @@ class MeshCoreProto
 {
 public:
     typedef bool (*SendFn)(const uint8_t *data, size_t len);
+    // Called for every decoded inbound message so callers can fan out (webhook,
+    // MQTT, ...) without this class knowing anything about them.
+    typedef void (*RecvFn)(const char *from, const char *text, int rssi, bool isDirect);
 
-    MeshCoreProto() : contactCount(0), sender(NULL), msgHead(0), msgCount(0) {}
+    MeshCoreProto() : contactCount(0), sender(NULL), receiver(NULL), msgHead(0), msgCount(0) {}
 
     // Needed so that received direct messages can be acknowledged. Without an
     // ACK the sending node reports the transmit as failed, even though the
     // message arrived and decrypted correctly.
     void setSender(SendFn fn) { sender = fn; }
+    void setReceiver(RecvFn fn) { receiver = fn; }
 
     // ---- identity -------------------------------------------------------
 
@@ -281,6 +285,7 @@ public:
     int contactCount;
     MCContact contacts[MC_MAX_CONTACTS];
     SendFn sender;
+    RecvFn receiver;
 
     int messageCount() const { return msgCount; }
     const MCMessage &messageAt(int i) const
@@ -516,6 +521,7 @@ private:
         copyCString(msg.text, sizeof(msg.text), (const char *)&plain[5], n - 5);
         strncpy(msg.from, "(public)", sizeof(msg.from) - 1);
         push(msg);
+        if (receiver) receiver(msg.from, msg.text, rssi, false);
         return true;
     }
 
@@ -545,6 +551,7 @@ private:
             strncpy(msg.from, contacts[i].name, sizeof(msg.from) - 1);
             copyCString(msg.text, sizeof(msg.text), (const char *)&plain[5], n - 5);
             push(msg);
+            if (receiver) receiver(msg.from, msg.text, rssi, true);
 
             // A flood-routed message means the sender has no route back yet, so
             // MeshCore answers with a PATH return that carries the path this
