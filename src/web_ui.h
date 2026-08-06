@@ -287,7 +287,12 @@ private:
             return;
         }
         if (d.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), d["url"]);
-        setSecret(config.webhook.token, sizeof(config.webhook.token), d["token"]);
+        if (!setSecret(config.webhook.token, sizeof(config.webhook.token), d["token"]))
+        {
+            server.send(400, "application/json",
+                        "{\"error\":\"token too long (max 128 characters)\"}");
+            return;
+        }
         if (d.containsKey("enabled")) config.webhook.enabled = d["enabled"];
         if (d.containsKey("includePublic")) config.webhook.includePublic = d["includePublic"];
         if (d.containsKey("includeDirect")) config.webhook.includeDirect = d["includeDirect"];
@@ -393,7 +398,12 @@ private:
             JsonObject w = d["wifi"];
             if (w.containsKey("ssid")) copyStr(config.wifi.ssid, sizeof(config.wifi.ssid), w["ssid"]);
             if (w.containsKey("enabled")) config.wifi.enabled = w["enabled"];
-            setSecret(config.wifi.password, sizeof(config.wifi.password), w["password"]);
+            if (!setSecret(config.wifi.password, sizeof(config.wifi.password), w["password"]))
+            {
+                server.send(400, "application/json",
+                            "{\"error\":\"wifi password too long (max 63 characters)\"}");
+                return;
+            }
             needsRestart = true;
         }
         if (d.containsKey("mqtt"))
@@ -404,7 +414,12 @@ private:
             if (m.containsKey("port")) config.mqtt.port = (uint16_t)(int)m["port"];
             if (m.containsKey("useTLS")) config.mqtt.useTLS = m["useTLS"];
             if (m.containsKey("username")) copyStr(config.mqtt.username, sizeof(config.mqtt.username), m["username"]);
-            setSecret(config.mqtt.password, sizeof(config.mqtt.password), m["password"]);
+            if (!setSecret(config.mqtt.password, sizeof(config.mqtt.password), m["password"]))
+            {
+                server.send(400, "application/json",
+                            "{\"error\":\"mqtt password too long (max 63 characters)\"}");
+                return;
+            }
             if (m.containsKey("basePrefix"))
             {
                 copyStr(config.mqtt.basePrefix, sizeof(config.mqtt.basePrefix), m["basePrefix"]);
@@ -446,7 +461,12 @@ private:
         {
             JsonObject wh = d["webhook"];
             if (wh.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), wh["url"]);
-            setSecret(config.webhook.token, sizeof(config.webhook.token), wh["token"]);
+            if (!setSecret(config.webhook.token, sizeof(config.webhook.token), wh["token"]))
+            {
+                server.send(400, "application/json",
+                            "{\"error\":\"token too long (max 128 characters)\"}");
+                return;
+            }
             if (wh.containsKey("enabled")) config.webhook.enabled = wh["enabled"];
             if (wh.containsKey("includePublic")) config.webhook.includePublic = wh["includePublic"];
             if (wh.containsKey("includeDirect")) config.webhook.includeDirect = wh["includeDirect"];
@@ -483,14 +503,18 @@ private:
         dest[n - 1] = '\0';
     }
 
-    // Empty or absent means "keep the current value".
-    static void setSecret(char *dest, size_t n, JsonVariant v)
+    // Empty or absent means "keep the current value". Returns false if the value
+    // is too long: truncating a secret silently is worse than refusing it, since
+    // the caller would never learn why authentication then fails.
+    static bool setSecret(char *dest, size_t n, JsonVariant v)
     {
-        if (v.isNull()) return;
+        if (v.isNull()) return true;
         const char *s = v.as<const char *>();
-        if (!s || *s == '\0') return;
+        if (!s || *s == '\0') return true;
+        if (strlen(s) > n - 1) return false;
         strncpy(dest, s, n - 1);
         dest[n - 1] = '\0';
+        return true;
     }
 
     static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -604,7 +628,7 @@ summary::-webkit-details-marker{opacity:.5}
       <div class="row">
         <div><label><input type="checkbox" id="c_when" style="width:auto"> Enabled</label></div>
         <div style="flex:2 1 20rem"><label>URL</label><input id="c_whurl" placeholder="https://your.host/hook"></div>
-        <div><label>Token <span class="meta" id="c_whtokset"></span></label><input id="c_whtok" type="password" placeholder="unchanged"></div>
+        <div><label>Token <span class="meta" id="c_whtokset"></span></label><input id="c_whtok" type="password" placeholder="unchanged" maxlength="128"></div>
         <div><label><input type="checkbox" id="c_whpub" style="width:auto"> Public messages</label></div>
         <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
       </div>

@@ -203,7 +203,11 @@ struct LogConfig {
 // never posts anywhere an operator did not configure.
 struct WebhookConfig {
     char url[160];
-    char token[64];    // sent as Authorization: Bearer <token> if set
+    // 128 chars + NUL. Sized so the common generators fit whole:
+    // `openssl rand -hex 32` is 64 chars, `-hex 64` is 128. Over-length values
+    // are rejected rather than truncated - a silently shortened token would
+    // authenticate against nothing and fail with no clue why.
+    char token[129];   // sent as Authorization: Bearer <token> if set
     bool enabled;
     bool includePublic;
     bool includeDirect;

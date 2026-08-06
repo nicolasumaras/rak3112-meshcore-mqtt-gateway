@@ -104,9 +104,15 @@ gateway *to your endpoint*, the opposite direction to the admin password:
 | admin password | you may call this API | you → gateway |
 | webhook token | the POST really came from this gateway | gateway → your server |
 
-Generate one with `openssl rand -hex 32`, set it below, and have your endpoint
-compare the `Authorization: Bearer` header. It is write-only — `GET` reports only
+Generate one with `openssl rand -hex 32` (64 chars) and have your endpoint compare
+the `Authorization: Bearer` header. It is write-only — `GET` reports only
 `hasToken`, so if you lose it, set a new one.
+
+**Length: 1-128 characters.** Anything longer is rejected with `400`, not
+truncated — a silently shortened secret would authenticate against nothing and
+fail with no clue why. Same rule for the WiFi and MQTT passwords (63 characters).
+
+Stored in NVS, so it survives reboots and reflashes.
 
 ### `GET /api/webhook`
 
