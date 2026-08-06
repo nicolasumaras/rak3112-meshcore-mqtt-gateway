@@ -733,10 +733,11 @@ summary::-webkit-details-marker{opacity:.5}
         <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
       </div>
       <div id="whreveal" style="display:none;margin-top:.6rem">
-        <div class="warn"><strong>Copy this now.</strong> It is shown once and cannot be read back from the gateway. Give it to your receiving endpoint. <strong>Send test delivery saves it for you</strong> — the gateway always tests with its stored token, never the one typed here.</div>
+        <div class="warn" id="whrevmsg"><strong>Copy this now.</strong> It cannot be shown again once dismissed. Paste it into your receiving endpoint, then press Save settings (Save stores this token) or Send test delivery.</div>
         <div style="display:flex;gap:.4rem">
           <input id="whplain" readonly style="flex:1;font-family:ui-monospace,monospace;font-size:.8rem">
           <button id="whcopy" type="button">Copy</button>
+          <button id="whdone" type="button" title="Hide the token">Done</button>
         </div>
       </div>
 
@@ -844,9 +845,16 @@ function fill(c){
   g('whstats').textContent='delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+
                            ' · dropped '+(w.dropped||0)+' · pending '+(w.pending||0);
 }
-let cfgLoaded=false, lastSavedUrl=null;
+let cfgLoaded=false, lastSavedUrl=null, tokenCopied=false;
 g('cfgcard').addEventListener('toggle',async e=>{
-  if(!e.target.open||cfgLoaded) return;
+  if(!e.target.open){
+    if(g('whreveal').style.display!=='none' && !tokenCopied){
+      alert('A newly generated webhook token is still on screen and has not been copied. It cannot be shown again.');
+      e.target.open=true;
+    }
+    return;
+  }
+  if(cfgLoaded) return;
   try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true;
        g('cfgnote').textContent=''; }
   catch(err){ g('cfgnote').textContent='failed to load' }
@@ -874,8 +882,18 @@ g('cfgsave').onclick=async()=>{
   g('cfgsave').disabled=false;
   g('cfgstatus').textContent = err ? ('failed: '+err)
       : 'saved — restart required for radio, WiFi, MQTT and logging changes';
-  if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value='';
-            g('whreveal').style.display='none'; g('whplain').value=''; cfgLoaded=false; }
+  if(!err){
+    g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value=''; cfgLoaded=false;
+    // Deliberately NOT clearing the revealed token here. Saving used to hide it,
+    // which meant the gateway held a token the operator could no longer read -
+    // the exact cause of a "token mismatch" that looked like a save failure.
+    if(g('whreveal').style.display!=='none'){
+      g('whrevmsg').innerHTML = tokenCopied
+        ? '<strong>Saved to the gateway.</strong> You copied this token — make sure your endpoint has it, then press Done.'
+        : '<strong>Saved to the gateway — but you have not copied it yet.</strong> Copy it now and paste it into your receiving endpoint. Once you press Done it cannot be shown again.';
+      g('whrevmsg').style.borderLeftColor = tokenCopied ? '#3a9d5d' : '#c0392b';
+    }
+  }
 };
 g('clksync').onclick=async()=>{
   g('clkstate').textContent='syncing...';
@@ -896,12 +914,22 @@ g('whgen').onclick=()=>{
   g('c_whtok').value=tok;
   g('whplain').value=tok;
   g('whreveal').style.display='block';
+  tokenCopied=false;
+  g('whrevmsg').innerHTML='<strong>Copy this now.</strong> It cannot be shown again once dismissed. Paste it into your receiving endpoint, then press Save settings (Save stores this token) or Send test delivery.';
+  g('whrevmsg').style.borderLeftColor='';
   g('cfgstatus').textContent='token generated — copy it, then Save settings';
 };
 g('whcopy').onclick=async()=>{
   const v=g('whplain').value;
-  try{ await navigator.clipboard.writeText(v); g('cfgstatus').textContent='token copied to clipboard'; }
-  catch(e){ g('whplain').select(); g('cfgstatus').textContent='press Cmd/Ctrl+C to copy'; }
+  try{ await navigator.clipboard.writeText(v); tokenCopied=true;
+       g('cfgstatus').textContent='token copied to clipboard'; }
+  catch(e){ g('whplain').select(); tokenCopied=true;
+            g('cfgstatus').textContent='press Cmd/Ctrl+C to copy'; }
+};
+g('whdone').onclick=()=>{
+  if(!tokenCopied && !confirm('You have not copied this token. It cannot be shown again. Hide it anyway?')) return;
+  g('whreveal').style.display='none'; g('whplain').value=''; tokenCopied=false;
+  g('whrevmsg').style.borderLeftColor='';
 };
 g('whtest').onclick=async()=>{
   // The device tests with its STORED token. Testing while an unsaved one sits in
