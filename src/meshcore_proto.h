@@ -139,6 +139,14 @@ public:
         Serial.println(F("..."));
     }
 
+    // The display name is copied in, so it must be refreshed when config changes
+    // or MeshCore traffic keeps announcing the old one until reboot.
+    void setName(const char *nodeName)
+    {
+        strncpy(name, nodeName, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+
     const uint8_t *publicKey() const { return pubKey; }
     uint8_t selfHash() const { return pubKey[0]; }
 

@@ -170,8 +170,18 @@ Read and update LoRa, node, WiFi, MQTT, logging and location settings. Passwords
 are never returned — only `hasPassword` flags — and an empty password field on
 POST means "leave unchanged".
 
-The response includes `"restart":true` when the change needs a reboot: LoRa,
-WiFi, MQTT and logging are all initialised once in `setup()`.
+The response includes `"restart":true` when the change needs a reboot.
+
+| Applies immediately | Needs a restart |
+|---|---|
+| Webhook (all fields) | LoRa: frequency, BW, SF, CR, TX power |
+| Max hops | WiFi |
+| Location | MQTT |
+| Node name | Remote logging |
+| Admin password | |
+
+The restart column is everything initialised once in `setup()` — `setupLoRa()`,
+the MQTT handler and the syslog client all run there and are never revisited.
 
 ```bash
 curl $AUTH "$GW/api/config"

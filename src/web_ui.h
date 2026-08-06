@@ -425,7 +425,11 @@ private:
         if (d.containsKey("repeater"))
         {
             JsonObject r = d["repeater"];
-            if (r.containsKey("nodeName")) copyStr(config.repeater.nodeName, sizeof(config.repeater.nodeName), r["nodeName"]);
+            if (r.containsKey("nodeName"))
+            {
+                copyStr(config.repeater.nodeName, sizeof(config.repeater.nodeName), r["nodeName"]);
+                mesh.setName(config.repeater.nodeName);   // else MeshCore keeps the old name
+            }
             if (r.containsKey("maxHops")) config.repeater.maxHops = clampInt(r["maxHops"], 0, 63);
         }
         if (d.containsKey("log"))
@@ -557,7 +561,7 @@ summary::-webkit-details-marker{opacity:.5}
       </div>
     </fieldset>
 
-    <fieldset><legend>Node</legend>
+    <fieldset><legend>Node <span class="meta">applies immediately</span></legend>
       <div class="row">
         <div><label>Node name</label><input id="c_name"></div>
         <div><label>Max hops <span class="meta">0 = no repeat</span></label><input id="c_hops" type="number" min="0" max="63"></div>
