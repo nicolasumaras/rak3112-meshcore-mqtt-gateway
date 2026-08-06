@@ -107,11 +107,27 @@ public:
     void handleMenu() {
         if (Serial.available()) {
             String input = readLineRaw();
-            
+            input.trim();
+
             if (input.length() == 0) return;
-            
+
+            // String::toInt() returns 0 for anything non-numeric, and 0 is
+            // "Exit Configuration" - so a single stray keystroke at the menu
+            // silently drops you out of config mode. After that the main loop
+            // ignores digits entirely (its switch has no default), so the menu
+            // appears dead. Require a well-formed number instead.
+            bool numeric = true;
+            for (unsigned int i = 0; i < input.length(); i++) {
+                if (!isdigit((unsigned char)input.charAt(i))) { numeric = false; break; }
+            }
+            if (!numeric) {
+                Serial.println(F("Invalid choice!"));
+                showMainMenu();
+                return;
+            }
+
             int choice = input.toInt();
-            
+
             switch (choice) {
                 case 1: configureWiFi(); break;
                 case 2: configureMQTT(); break;
