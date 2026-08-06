@@ -351,6 +351,7 @@ void setup()
     if (config.wifi.enabled && WiFi.status() == WL_CONNECTED)
     {
         webUI = new MeshWebUI(config, settingsManager, meshProto, *webHook, webSendBridge);
+        webUI->setLogger([](const char *m) { if (sysLog) sysLog->log(LOG_INFO, m); });
         if (webUI->begin())
         {
             Serial.print(F("✓ MeshCore web UI: http://"));

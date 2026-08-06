@@ -24,6 +24,7 @@
 #include "webhook.h"
 
 typedef bool (*WebSendFn)(const uint8_t *data, size_t len);
+typedef void (*WebLogFn)(const char *msg);
 
 class MeshWebUI
 {
@@ -68,6 +69,7 @@ public:
     }
 
     bool isStarted() const { return started; }
+    void setLogger(WebLogFn fn) { apiLog = fn; }
 
 private:
     WebServer server;
@@ -77,6 +79,7 @@ private:
     WebhookSender &hook;
     WebSendFn send;
     bool started;
+    WebLogFn apiLog = nullptr;
 
     bool authed()
     {
@@ -182,12 +185,32 @@ private:
             label = mesh.contacts[to].name;
         }
 
-        if (n == 0 || !send(frame, n))
+        if (n == 0)
         {
+            if (apiLog) apiLog("api send REJECTED: could not build frame");
+            server.send(500, "application/json", "{\"error\":\"could not build frame\"}");
+            return;
+        }
+        if (!send(frame, n))
+        {
+            if (apiLog)
+            {
+                char b[128];
+                snprintf(b, sizeof(b), "api send FAILED to=%s len=%u (radio refused)",
+                         label, (unsigned)strlen(text));
+                apiLog(b);
+            }
             server.send(500, "application/json", "{\"error\":\"transmit failed\"}");
             return;
         }
         mesh.recordOutgoing(label, text, direct);
+        if (apiLog)
+        {
+            char b[128];
+            snprintf(b, sizeof(b), "api send ok to=%s len=%u frame=%u",
+                     label, (unsigned)strlen(text), (unsigned)n);
+            apiLog(b);
+        }
         server.send(200, "application/json", "{\"ok\":true}");
     }
 
