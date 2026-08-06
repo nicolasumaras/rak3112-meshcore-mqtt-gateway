@@ -517,11 +517,22 @@ void handleLoRaReceive()
             int rssi = radio.getRSSI();
             float snr = radio.getSNR();
 
-            Serial.printf("📥 RX SUCCESS: %d bytes, RSSI=%d dBm, SNR=%.1f dB\n", length, rssi, snr);
-            packetsReceived++;
+            // Defence in depth against spurious interrupts (see sendLoRaPacket).
+            // A zero-length read is never a real packet, and passing it through
+            // would inflate packetsReceived and publish an empty payload to MQTT:
+            // handleLoRaPacket() has no length guard of its own.
+            if (length == 0)
+            {
+                Serial.println(F("⚠ Spurious interrupt (0 bytes) - ignoring"));
+            }
+            else
+            {
+                Serial.printf("📥 RX SUCCESS: %d bytes, RSSI=%d dBm, SNR=%.1f dB\n", length, rssi, snr);
+                packetsReceived++;
 
-            // Handle the packet
-            handleLoRaPacket(buffer, length, rssi, snr);
+                // Handle the packet
+                handleLoRaPacket(buffer, length, rssi, snr);
+            }
         }
         else if (state == RADIOLIB_ERR_CRC_MISMATCH)
         {
@@ -740,6 +751,13 @@ bool sendLoRaPacket(const uint8_t *data, size_t length)
 
     // Transmit the packet
     int state = radio.transmit((uint8_t *)data, length);
+
+    // radio.transmit() is blocking, and on completion TxDone asserts the same DIO
+    // line that setPacketReceivedAction() hooks. That fires the ISR and leaves
+    // packetReceived set, so without this the next handleLoRaReceive() reads a
+    // stale flag and reports a phantom zero-byte packet. Clear it before
+    // returning to RX. Observed on RAK3112 hardware; applies to any board here.
+    packetReceived = false;
 
     if (state == RADIOLIB_ERR_NONE)
     {
