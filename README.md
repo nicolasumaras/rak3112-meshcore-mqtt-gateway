@@ -11,8 +11,31 @@ with no external Pi or bridge process.
 
 ## Status
 
-Planning. No code yet. See **[docs/PORTING-PLAN.md](docs/PORTING-PLAN.md)** for the full plan
-and **[the issue tracker](../../issues)** for per-phase progress.
+**Phases 0-2 done — the port builds.** `pio run -e rak3112_mqtt` produces a flashable
+`firmware.bin` (RAM 15.5%, Flash 28.4%).
+
+**It has never been run on hardware.** Phases 3-5 (radio bring-up, end-to-end MQTT
+validation, soak) are all still open. Treat this as "ready to flash and find out," not
+"working."
+
+Verified by inspection of the built image: the **SX1262** path compiled, not SX1276
+(`nm` shows zero `SX1276` symbols), and all eight pin values compiled through as intended
+via negative-controlled `static_assert`s. See
+[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md#what-is-and-isnt-proven) for the full
+proven/unproven split.
+
+- **[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md)** — build, flash, and failure triage
+- **[docs/PORTING-PLAN.md](docs/PORTING-PLAN.md)** — full plan and findings
+- **[Issues](../../issues)** — per-phase progress
+
+### Repo layout
+
+`jmead`'s firmware is vendored at `b9c1a33` in a **pristine** commit (`e0e3f79`), with the
+RAK3112 port as an isolated commit on top. The upstream-ready patch is therefore exactly:
+
+```bash
+git diff e0e3f79..HEAD -- src platformio.ini .github
+```
 
 ## The headline finding
 

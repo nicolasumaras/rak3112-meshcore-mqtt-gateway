@@ -28,6 +28,10 @@
 // LoRa radio object
 #ifdef RAK4631_ETH
 SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
+#elif defined(RAK_3112)
+// RadioLib Module signature is (cs, irq, rst, gpio); for SX126x that is
+// (NSS, DIO1, RESET, BUSY).
+SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
 #elif defined(HELTEC_V3)
 SX1262 radio = new Module(LORA_CS, LORA_DIO0, LORA_RST, LORA_BUSY);
 #else
@@ -348,6 +352,38 @@ void setupLoRa()
         8);
     // Enable DIO2 RF switch control and DIO3 TCXO if needed (defaults okay for WisBlock)
     radio.setDio2AsRfSwitch(true);
+#elif defined(RAK_3112)
+    // RAK3112 (ESP32-S3 + SX1262). Settings mirror meshcore-dev/MeshCore's
+    // rak3112 variant. TCXO voltage is passed via begin() rather than a separate
+    // setTCXO() call, matching the HELTEC_V3 path below.
+    //
+    // SX1262 maximum is 22 dBm; the shared config has no clamp of its own and the
+    // serial menu does not enforce its advertised 2-20 range, so clamp here.
+    {
+        int txPower = config.lora.txPower;
+        if (txPower > RAK3112_MAX_TX_POWER)
+        {
+            Serial.printf("\n  TX power %d dBm exceeds SX1262 max, clamping to %d dBm... ",
+                          txPower, RAK3112_MAX_TX_POWER);
+            txPower = RAK3112_MAX_TX_POWER;
+        }
+        state = radio.begin(
+            config.lora.frequency,
+            config.lora.bandwidth,
+            config.lora.spreadingFactor,
+            config.lora.codingRate,
+            config.lora.syncWord,
+            txPower,
+            8,      // preamble length
+            1.8F,   // DIO3 TCXO voltage
+            false); // useRegulatorLDO = false -> DC-DC
+    }
+    if (state == RADIOLIB_ERR_NONE)
+    {
+        radio.setDio2AsRfSwitch(true);
+        radio.setCurrentLimit(140.0);
+        radio.setRxBoostedGainMode(true);
+    }
 #elif defined(HELTEC_V3)
     state = radio.begin(
         config.lora.frequency,

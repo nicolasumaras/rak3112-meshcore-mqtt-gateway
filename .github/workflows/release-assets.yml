@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [esp32_mqtt_gateway, lilygo_lora32_v21, heltec_v3_mqtt, heltec_v2_mqtt, tbeam_sx1276]
+        env: [esp32_mqtt_gateway, lilygo_lora32_v21, heltec_v3_mqtt, heltec_v2_mqtt, tbeam_sx1276, rak3112_mqtt]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

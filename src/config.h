@@ -90,6 +90,24 @@
     #define LORA_DIO1  47
     #define LORA_BUSY  46
     // Antenna power control (if needed): 37
+#elif defined(RAK_3112)
+    // RAK3112 (ESP32-S3 + SX1262).
+    // Pin map verified against meshcore-dev/MeshCore @ 03b6ef4,
+    // variants/rak3112/platformio.ini.
+    #define LORA_SCK    5
+    #define LORA_MISO   3
+    #define LORA_MOSI   6
+    #define LORA_CS     7
+    #define LORA_RST    8
+    #define LORA_DIO1   47
+    #define LORA_BUSY   48
+    // TX activity LED (upstream P_LORA_TX_LED); not driven by this firmware.
+    #define LORA_TX_LED 46
+    // VEXT (GPIO14) gates peripherals only, NOT the radio. Upstream MeshCore
+    // leaves it low and the SX1262 still works, so it is deliberately unused here.
+    // SX1262 hard maximum. DEFAULT_LORA_TX_POWER is 20 and nothing in the shared
+    // config clamps it, so setupLoRa() enforces this ceiling for this board.
+    #define RAK3112_MAX_TX_POWER 22
 #else
     // Generic ESP32 with LoRa module
     #define LORA_SCK 5
