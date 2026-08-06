@@ -24,6 +24,14 @@
 #include "settings_manager.h"
 #include "mqtt_handler.h"
 #include "serial_config.h"
+#ifdef RAK_3112
+#include "meshcore_proto.h"
+// MeshCore's default "Public" channel PSK, base64 izOH6cXN6mrJ5e26oRXNcg==
+static const uint8_t MC_PUBLIC_PSK[16] = {
+    0x8B, 0x33, 0x87, 0xE9, 0xC5, 0xCD, 0xEA, 0x6A,
+    0xC9, 0xE5, 0xED, 0xBA, 0xA1, 0x15, 0xCD, 0x72};
+MeshCoreProto meshProto;
+#endif
 
 // LoRa radio object
 #ifdef RAK4631_ETH
@@ -306,6 +314,14 @@ void setup()
     serialConfig = new ConfigMenu(config, settingsManager);
     serialConfig->setOnExitCallback(exitConfigMode);
     serialConfig->begin();
+
+#ifdef RAK_3112
+    // MeshCore identity + public channel. The keypair is generated once and
+    // persisted, so the node keeps a stable identity across reboots.
+    meshProto.begin(config.repeater.nodeName);
+    meshProto.setChannelPsk(MC_PUBLIC_PSK, sizeof(MC_PUBLIC_PSK));
+    Serial.printf("  MeshCore public channel hash: 0x%02X\n", meshProto.channelHash());
+#endif
 
     Serial.println();
     Serial.println(F("════════════════════════════════════════════════════════"));
@@ -606,6 +622,13 @@ void handleLoRaPacket(uint8_t *data, size_t length, int rssi, float snr)
 {
     // Log to serial
     Serial.printf("\n📡 LoRa RX: %d bytes | RSSI: %d dBm | SNR: %.1f dB\n", length, rssi, snr);
+
+#ifdef RAK_3112
+    // Decode as MeshCore: records contacts from adverts and decrypts messages
+    // addressed to us or to the public channel. Non-MeshCore traffic just
+    // returns false and falls through to the existing raw handling below.
+    meshProto.handleFrame(data, length, rssi);
+#endif
 
     // Print hex dump (first 32 bytes)
     Serial.print("   Data: ");
@@ -998,6 +1021,52 @@ void checkSerialInput()
             Serial.println(F("└────────────────────────────────────────────────────────┘\n"));
             break;
 
+#ifdef RAK_3112
+        case 'm':
+        case 'M':
+        {
+            Serial.println(F("\n📡 Sending MeshCore public-channel message..."));
+            uint8_t frame[255];
+            uint32_t ts = (uint32_t)time(nullptr);
+            if (ts < 1600000000UL) ts = millis() / 1000;   // no NTP yet
+            size_t n = meshProto.buildGroupText(frame, sizeof(frame), "hello from RAK3112", ts);
+            if (n == 0)
+            {
+                Serial.println(F("  ✗ Failed to build frame"));
+                break;
+            }
+            Serial.print(F("  frame: "));
+            for (size_t i = 0; i < n; ++i) Serial.printf("%02X", frame[i]);
+            Serial.println();
+            if (sendLoRaPacket(frame, n))
+            {
+                meshProto.recordOutgoing("(public)", "hello from RAK3112", false);
+                Serial.println(F("  ✓ Sent"));
+            }
+            break;
+        }
+        case 'k':
+        case 'K':
+        {
+            Serial.println(F("\n🔑 MeshCore identity"));
+            Serial.print(F("  public key: "));
+            const uint8_t *pk = meshProto.publicKey();
+            for (int i = 0; i < 32; ++i) Serial.printf("%02X", pk[i]);
+            Serial.println();
+            Serial.printf("  self hash : 0x%02X\n", meshProto.selfHash());
+            Serial.printf("  chan hash : 0x%02X\n", meshProto.channelHash());
+            Serial.printf("  contacts  : %d\n", meshProto.contactCount);
+            for (int i = 0; i < MC_MAX_CONTACTS; ++i)
+            {
+                if (meshProto.contacts[i].used)
+                    Serial.printf("    - %s (hash 0x%02X, rssi %d)\n",
+                                  meshProto.contacts[i].name,
+                                  meshProto.contacts[i].pubKey[0],
+                                  meshProto.contacts[i].lastRssi);
+            }
+            break;
+        }
+#endif
         case 't':
         case 'T':
             Serial.println(F("\n📡 Sending test packet..."));
