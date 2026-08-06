@@ -92,6 +92,22 @@ curl $AUTH -X POST "$GW/api/advert"
 
 Registers a URL that receives a POST for every decoded inbound message.
 
+> Also editable from the **Settings → Webhook** panel in the web UI, including a
+> "Send test delivery" button and live delivery counters. The API below is for
+> scripting; nothing here requires it.
+
+**The token is not issued by the gateway — you choose it.** It authenticates the
+gateway *to your endpoint*, the opposite direction to the admin password:
+
+| Secret | Proves | Direction |
+|---|---|---|
+| admin password | you may call this API | you → gateway |
+| webhook token | the POST really came from this gateway | gateway → your server |
+
+Generate one with `openssl rand -hex 32`, set it below, and have your endpoint
+compare the `Authorization: Bearer` header. It is write-only — `GET` reports only
+`hasToken`, so if you lose it, set a new one.
+
 ### `GET /api/webhook`
 
 ```json

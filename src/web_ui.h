@@ -355,6 +355,17 @@ private:
         g["minLevel"] = config.log.minLevel;
         g["heartbeatSec"] = config.log.heartbeatSec;
 
+        JsonObject wh = d.createNestedObject("webhook");
+        wh["enabled"] = config.webhook.enabled;
+        wh["url"] = config.webhook.url;
+        wh["hasToken"] = strlen(config.webhook.token) > 0;
+        wh["includePublic"] = config.webhook.includePublic;
+        wh["includeDirect"] = config.webhook.includeDirect;
+        wh["delivered"] = hook.deliveredCount();
+        wh["failed"] = hook.failedCount();
+        wh["dropped"] = hook.droppedCount();
+        wh["pending"] = hook.pending();
+
         JsonObject loc = d.createNestedObject("location");
         loc["latitude"] = config.location.latitude;
         loc["longitude"] = config.location.longitude;
@@ -426,6 +437,16 @@ private:
             if (g.containsKey("minLevel")) config.log.minLevel = clampInt(g["minLevel"], 0, 3);
             if (g.containsKey("heartbeatSec")) config.log.heartbeatSec = clampInt(g["heartbeatSec"], 0, 3600);
             needsRestart = true;
+        }
+        if (d.containsKey("webhook"))
+        {
+            JsonObject wh = d["webhook"];
+            if (wh.containsKey("url")) copyStr(config.webhook.url, sizeof(config.webhook.url), wh["url"]);
+            setSecret(config.webhook.token, sizeof(config.webhook.token), wh["token"]);
+            if (wh.containsKey("enabled")) config.webhook.enabled = wh["enabled"];
+            if (wh.containsKey("includePublic")) config.webhook.includePublic = wh["includePublic"];
+            if (wh.containsKey("includeDirect")) config.webhook.includeDirect = wh["includeDirect"];
+            if (config.webhook.url[0] == '\0') config.webhook.enabled = false;
         }
         if (d.containsKey("location"))
         {
@@ -574,6 +595,21 @@ summary::-webkit-details-marker{opacity:.5}
       </div>
     </fieldset>
 
+    <fieldset><legend>Webhook <span class="meta">applies immediately</span></legend>
+      <div class="warn">The token is sent by the gateway to <em>your</em> endpoint as <code>Authorization: Bearer &lt;token&gt;</code> so your server can verify the POST came from here. You choose the value; it is never readable back.</div>
+      <div class="row">
+        <div><label><input type="checkbox" id="c_when" style="width:auto"> Enabled</label></div>
+        <div style="flex:2 1 20rem"><label>URL</label><input id="c_whurl" placeholder="https://your.host/hook"></div>
+        <div><label>Token <span class="meta" id="c_whtokset"></span></label><input id="c_whtok" type="password" placeholder="unchanged"></div>
+        <div><label><input type="checkbox" id="c_whpub" style="width:auto"> Public messages</label></div>
+        <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <button id="whtest">Send test delivery</button>
+        <span class="meta" id="whstats" style="flex:1"></span>
+      </div>
+    </fieldset>
+
     <div class="row" style="margin-top:.75rem">
       <button id="cfgsave">Save settings</button>
       <button id="cfgrestart">Restart device</button>
@@ -658,6 +694,12 @@ function fill(c){
   g('c_logen').checked=c.log.enabled; g('c_logsrv').value=c.log.server;
   g('c_logport').value=c.log.port; g('c_loglvl').value=c.log.minLevel;
   g('c_loghb').value=c.log.heartbeatSec;
+  const w=c.webhook||{};
+  g('c_when').checked=!!w.enabled; g('c_whurl').value=w.url||'';
+  g('c_whtokset').textContent=w.hasToken?'(set)':'(not set)';
+  g('c_whpub').checked=w.includePublic!==false; g('c_whdir').checked=w.includeDirect!==false;
+  g('whstats').textContent='delivered '+(w.delivered||0)+' · failed '+(w.failed||0)+
+                           ' · dropped '+(w.dropped||0)+' · pending '+(w.pending||0);
 }
 let cfgLoaded=false;
 g('cfgcard').addEventListener('toggle',async e=>{
@@ -678,14 +720,21 @@ g('cfgsave').onclick=async()=>{
           useTLS:g('c_mqtls').checked,username:g('c_mquser').value,password:g('c_mqpw').value,
           basePrefix:g('c_mqpfx').value},
     log:{enabled:g('c_logen').checked,server:g('c_logsrv').value,port:parseInt(g('c_logport').value,10),
-         minLevel:parseInt(g('c_loglvl').value,10),heartbeatSec:parseInt(g('c_loghb').value,10)}
+         minLevel:parseInt(g('c_loglvl').value,10),heartbeatSec:parseInt(g('c_loghb').value,10)},
+    webhook:{enabled:g('c_when').checked,url:g('c_whurl').value,token:g('c_whtok').value,
+             includePublic:g('c_whpub').checked,includeDirect:g('c_whdir').checked}
   };
   g('cfgstatus').textContent='saving...'; g('cfgsave').disabled=true;
   const err=await post('/api/config',body);
   g('cfgsave').disabled=false;
   g('cfgstatus').textContent = err ? ('failed: '+err)
       : 'saved — restart required for radio, WiFi, MQTT and logging changes';
-  if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; cfgLoaded=false; }
+  if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value=''; cfgLoaded=false; }
+};
+g('whtest').onclick=async()=>{
+  g('cfgstatus').textContent='sending test delivery...';
+  const err=await post('/api/webhook/test');
+  g('cfgstatus').textContent = err ? ('test failed: '+err) : 'test delivered — your endpoint returned 2xx';
 };
 g('cfgrestart').onclick=async()=>{
   if(!confirm('Restart the gateway now? The page will be unreachable for a few seconds.')) return;
