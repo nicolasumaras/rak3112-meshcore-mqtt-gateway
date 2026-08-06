@@ -46,6 +46,7 @@
 #define MC_MAX_ADVERT_DATA  32
 
 #define MC_PT_TXT_MSG   0x02
+#define MC_PT_ACK       0x03
 #define MC_PT_ADVERT    0x04
 #define MC_PT_GRP_TXT   0x05
 
@@ -83,7 +84,14 @@ struct MCMessage
 class MeshCoreProto
 {
 public:
-    MeshCoreProto() : contactCount(0), msgHead(0), msgCount(0) {}
+    typedef bool (*SendFn)(const uint8_t *data, size_t len);
+
+    MeshCoreProto() : contactCount(0), sender(NULL), msgHead(0), msgCount(0) {}
+
+    // Needed so that received direct messages can be acknowledged. Without an
+    // ACK the sending node reports the transmit as failed, even though the
+    // message arrived and decrypted correctly.
+    void setSender(SendFn fn) { sender = fn; }
 
     // ---- identity -------------------------------------------------------
 
@@ -262,6 +270,7 @@ public:
 
     int contactCount;
     MCContact contacts[MC_MAX_CONTACTS];
+    SendFn sender;
 
     int messageCount() const { return msgCount; }
     const MCMessage &messageAt(int i) const
@@ -469,9 +478,43 @@ private:
             strncpy(msg.from, contacts[i].name, sizeof(msg.from) - 1);
             copyCString(msg.text, sizeof(msg.text), (const char *)&plain[5], n - 5);
             push(msg);
+
+            sendAck(plain, n, contacts[i].pubKey);
             return true;
         }
         return false;
+    }
+
+    // Acknowledge a received direct message. Mirrors BaseChatMesh.cpp: the ACK
+    // payload is a 6-byte proof-of-receipt whose first 4 bytes are
+    // SHA256(plaintext[0 .. 5+text_len] || sender_pub_key), which is what the
+    // sender compares against. Bytes 4 and 5 are an attempt marker and a random
+    // byte, present only to keep the packet hash unique.
+    void sendAck(const uint8_t *plain, int plainLen, const uint8_t *senderPub)
+    {
+        if (!sender) return;
+
+        int textLen = 0;
+        while (5 + textLen < plainLen && plain[5 + textLen] != '\0') textLen++;
+
+        uint8_t ackHash[6];
+        SHA256 sha;
+        sha.reset();
+        sha.update(plain, 5 + textLen);
+        sha.update(senderPub, MC_PUB_KEY_SIZE);
+        sha.finalize(ackHash, 4);
+        ackHash[4] = (5 + textLen + 1 < plainLen) ? plain[5 + textLen + 1] : 0;
+        ackHash[5] = (uint8_t)(esp_random() & 0xFF);
+
+        uint8_t frame[32];
+        size_t n = assemble(frame, sizeof(frame), MC_PT_ACK, MC_RT_FLOOD, ackHash, sizeof(ackHash));
+        if (n == 0) return;
+
+        delay(200);   // MeshCore's TXT_ACK_DELAY: let the sender switch to RX
+        if (sender(frame, n))
+        {
+            Serial.println(F("   ↩ ACK sent"));
+        }
     }
 
     static void copyCString(char *dest, size_t destSize, const char *src, int maxLen)

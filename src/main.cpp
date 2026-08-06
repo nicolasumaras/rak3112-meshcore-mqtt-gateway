@@ -323,6 +323,7 @@ void setup()
     // persisted, so the node keeps a stable identity across reboots.
     meshProto.begin(config.repeater.nodeName);
     meshProto.setChannelPsk(MC_PUBLIC_PSK, sizeof(MC_PUBLIC_PSK));
+    meshProto.setSender(webSendBridge);   // so received direct messages get ACKed
     Serial.printf("  MeshCore public channel hash: 0x%02X\n", meshProto.channelHash());
 
     // Web UI needs WiFi, which only comes up as part of the MQTT handler.
