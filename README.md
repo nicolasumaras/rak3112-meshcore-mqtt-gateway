@@ -29,10 +29,56 @@ participant** with a web UI, not just an MQTT bridge:
 | Direct messages via ECDH, with ACK | ✅ verified |
 | `PATH` return so peers switch to direct routing | ✅ verified |
 | Password-protected web UI | ✅ verified |
+| Settings editable from the web UI (no USB needed) | ⚠️ untested |
+| HTTP API for messages and contacts | ⚠️ untested |
+| Outbound webhook for received messages | ⚠️ untested |
+| Remote syslog + soak collector | ✅ verified |
 
 Browse to the gateway's IP, log in as `admin`, and you get a contact list, a
-message view, and a send box for public or direct messages — plus "Announce me"
-to broadcast a signed advert so other nodes can add the gateway.
+message view, a send box for public or direct messages, "Announce me" to
+broadcast a signed advert, and a Settings panel covering LoRa, WiFi, MQTT,
+logging and location.
+
+The three ⚠️ rows are implemented and return the right thing unauthenticated
+(401), but the authenticated round-trip has not been exercised — that needs the
+operator's admin password.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| **[docs/API.md](docs/API.md)** | HTTP API — send messages, list contacts, register a webhook. Working `curl` examples. |
+| **[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md)** | Build, flash, first boot, failure triage, and the proven/unproven split |
+| **[docs/PORTING-PLAN.md](docs/PORTING-PLAN.md)** | The original port: findings, wire formats, phase breakdown |
+| **[docs/UPSTREAM-README.md](docs/UPSTREAM-README.md)** | jmead's original README, preserved verbatim |
+
+| Tool | What it does |
+|---|---|
+| **[tools/syslog_server.py](tools/syslog_server.py)** | Syslog collector. Events to a log file, heartbeats to CSV for plotting a soak. Standard library only. |
+| **[tools/meshcore_send.py](tools/meshcore_send.py)** | Builds a valid MeshCore frame off-device and injects it via MQTT. Predates on-device messaging; kept as a reference implementation of the wire format. |
+
+## Quick reference
+
+```bash
+# build and flash
+pio run -e rak3112_mqtt -t upload
+
+# serial config: 'c' for the menu, 'k' identity/contacts, 'm' send public message
+screen /dev/cu.usbmodem* 115200        # exit with Ctrl-A K y
+
+# API
+GW=http://<gateway-ip>; AUTH='-u admin:YOUR_PASSWORD'
+curl $AUTH "$GW/api/contacts"
+curl $AUTH -X POST "$GW/api/messages" -H 'Content-Type: application/json' \
+     -d '{"text":"hello","to":-1}'
+
+# collect telemetry for a soak
+python3 tools/syslog_server.py --port 5514
+```
+
+Serial menu highlights: `3` LoRa · `4` repeater/hops · `10` admin password
+(required for the web UI) · `16` remote logging. Radio, WiFi, MQTT and logging
+changes all need a restart — they initialise once in `setup()`.
 
 **Known limitation:** DIRECT-routed packets are received and answered but not
 *forwarded*. Relaying them requires matching our identity hash against `path[0]`
