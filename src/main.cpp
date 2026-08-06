@@ -343,7 +343,7 @@ void setup()
     // Web UI needs WiFi, which only comes up as part of the MQTT handler.
     if (config.wifi.enabled && WiFi.status() == WL_CONNECTED)
     {
-        webUI = new MeshWebUI(config, meshProto, webSendBridge);
+        webUI = new MeshWebUI(config, settingsManager, meshProto, webSendBridge);
         if (webUI->begin())
         {
             Serial.print(F("✓ MeshCore web UI: http://"));
