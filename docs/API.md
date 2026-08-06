@@ -104,8 +104,13 @@ gateway *to your endpoint*, the opposite direction to the admin password:
 | admin password | you may call this API | you → gateway |
 | webhook token | the POST really came from this gateway | gateway → your server |
 
-Generate one with `openssl rand -hex 32` (64 chars) and have your endpoint compare
-the `Authorization: Bearer` header. It is write-only — `GET` reports only
+The web UI has a **Generate** button next to the token field: it mints 64 random
+hex characters in the browser via `crypto.getRandomValues`, shows them once with
+a Copy button, and posts them on save. Generating browser-side means the token
+never travels device → browser, so the write-only rule holds even at creation.
+
+Equivalent by hand: `openssl rand -hex 32`. Either way, have your endpoint
+compare the `Authorization: Bearer` header. It is write-only — `GET` reports only
 `hasToken`, so if you lose it, set a new one.
 
 **Length: 1-128 characters.** Anything longer is rejected with `400`, not

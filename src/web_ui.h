@@ -628,10 +628,23 @@ summary::-webkit-details-marker{opacity:.5}
       <div class="row">
         <div><label><input type="checkbox" id="c_when" style="width:auto"> Enabled</label></div>
         <div style="flex:2 1 20rem"><label>URL</label><input id="c_whurl" placeholder="https://your.host/hook"></div>
-        <div><label>Token <span class="meta" id="c_whtokset"></span></label><input id="c_whtok" type="password" placeholder="unchanged" maxlength="128"></div>
+        <div><label>Token <span class="meta" id="c_whtokset"></span></label>
+          <div style="display:flex;gap:.4rem">
+            <input id="c_whtok" type="password" placeholder="unchanged" maxlength="128" style="flex:1">
+            <button id="whgen" type="button" title="Generate a random 64-character token">Generate</button>
+          </div>
+        </div>
         <div><label><input type="checkbox" id="c_whpub" style="width:auto"> Public messages</label></div>
         <div><label><input type="checkbox" id="c_whdir" style="width:auto"> Direct messages</label></div>
       </div>
+      <div id="whreveal" style="display:none;margin-top:.6rem">
+        <div class="warn"><strong>Copy this now.</strong> It is shown once and cannot be read back from the gateway. Give it to your receiving endpoint, then press Save settings.</div>
+        <div style="display:flex;gap:.4rem">
+          <input id="whplain" readonly style="flex:1;font-family:ui-monospace,monospace;font-size:.8rem">
+          <button id="whcopy" type="button">Copy</button>
+        </div>
+      </div>
+
       <div class="row" style="margin-top:.5rem">
         <button id="whtest">Send test delivery</button>
         <span class="meta" id="whstats" style="flex:1"></span>
@@ -757,7 +770,28 @@ g('cfgsave').onclick=async()=>{
   g('cfgsave').disabled=false;
   g('cfgstatus').textContent = err ? ('failed: '+err)
       : 'saved — restart required for radio, WiFi, MQTT and logging changes';
-  if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value=''; cfgLoaded=false; }
+  if(!err){ g('c_wpw').value=''; g('c_mqpw').value=''; g('c_whtok').value='';
+            g('whreveal').style.display='none'; g('whplain').value=''; cfgLoaded=false; }
+};
+g('whgen').onclick=()=>{
+  // getRandomValues works in insecure contexts; crypto.subtle does not, which is
+  // why this uses the former. Never fall back to Math.random for a secret - an
+  // unpredictable-looking but guessable token is worse than no button at all.
+  if(!(window.crypto&&window.crypto.getRandomValues)){
+    g('cfgstatus').textContent='this browser cannot generate securely — use: openssl rand -hex 32';
+    return;
+  }
+  const b=new Uint8Array(32); window.crypto.getRandomValues(b);
+  const tok=Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+  g('c_whtok').value=tok;
+  g('whplain').value=tok;
+  g('whreveal').style.display='block';
+  g('cfgstatus').textContent='token generated — copy it, then Save settings';
+};
+g('whcopy').onclick=async()=>{
+  const v=g('whplain').value;
+  try{ await navigator.clipboard.writeText(v); g('cfgstatus').textContent='token copied to clipboard'; }
+  catch(e){ g('whplain').select(); g('cfgstatus').textContent='press Cmd/Ctrl+C to copy'; }
 };
 g('whtest').onclick=async()=>{
   g('cfgstatus').textContent='sending test delivery...';
