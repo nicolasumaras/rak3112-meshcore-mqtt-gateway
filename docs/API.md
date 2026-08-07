@@ -257,6 +257,67 @@ the device actually knows the time.
 > instead of an epoch, and MeshCore adverts fell back to a synthetic counter.
 > Time is now synced on its own account at boot when `autoSync` is on.
 
+---
+
+## Firmware update (OTA)
+
+> **This is remote code execution by design.** Anyone who can authenticate can
+> replace the firmware. On plain HTTP the admin password crosses the LAN
+> readable, so treat OTA as a trusted-network feature. Behind a TLS reverse
+> proxy, or not exposed beyond your LAN.
+
+### `GET /api/update`
+
+```json
+{"running":"app0","sketchSize":1147117,"sketchMD5":"...",
+ "freeSpace":3342336,"canUpdate":true}
+```
+
+### `POST /api/update`
+
+Multipart upload of `firmware.bin`. Optional `?md5=<32 hex>` for integrity.
+
+```bash
+curl $AUTH -X POST "$GW/api/update" \
+     -F "firmware=@.pio/build/rak3112_mqtt/firmware.bin"
+
+# with integrity check
+MD5=$(md5 -q .pio/build/rak3112_mqtt/firmware.bin)
+curl $AUTH -X POST "$GW/api/update?md5=$MD5" \
+     -F "firmware=@.pio/build/rak3112_mqtt/firmware.bin"
+```
+
+Returns `{"ok":true,"bytes":N}` then reboots. On failure it returns the reason
+and keeps running the existing firmware.
+
+Also available from **Settings → Firmware** with a progress bar.
+
+### What protects you
+
+- **Auth is checked before any byte is accepted** (at `UPLOAD_FILE_START`), so an
+  unauthenticated request never reaches the flash. Verified: an unauthenticated
+  POST with a real payload returns 401 and writes nothing.
+- **Writes go to the inactive OTA partition.** The running firmware is untouched
+  until a fully verified `end()` switches the boot partition, so an interrupted
+  or truncated upload is harmless — reboot and the old image still runs.
+- **Magic-byte check.** A file not starting `0xE9` is rejected as "not an ESP32
+  firmware image", turning "uploaded the wrong file" into an error rather than a
+  brick.
+- **Optional MD5.** Supply `?md5=` and a corrupted transfer is refused.
+
+### What does not protect you
+
+A **complete, valid, but wrong** image — firmware for another board, or a build
+without WiFi — will flash successfully and boot into something unreachable.
+Recovery is a USB cable:
+
+```bash
+pio run -e rak3112_mqtt -t upload
+```
+
+Configuration survives: NVS is a separate partition, so WiFi, MQTT, webhooks,
+tokens, the MeshCore identity and contacts are all preserved across OTA.
+
 ### `POST /api/restart`
 
 Reboots. Responds first, then restarts, so the caller sees `{"ok":true}`.

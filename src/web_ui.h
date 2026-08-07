@@ -17,6 +17,8 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 
 #include "config.h"
 #include "settings_manager.h"
@@ -59,6 +61,10 @@ public:
         server.on("/api/webhooks", HTTP_POST, [this]() { handleSetWebhooks(); });
         server.on("/api/webhooks/test", HTTP_POST, [this]() { handleTestWebhook(); });
         server.on("/api/timesync", HTTP_POST, [this]() { handleTimeSync(); });
+        server.on("/api/update", HTTP_GET, [this]() { handleUpdateInfo(); });
+        server.on("/api/update", HTTP_POST,
+                  [this]() { handleUpdateDone(); },
+                  [this]() { handleUpdateUpload(); });
         server.onNotFound([this]() { server.send(404, "text/plain", "not found"); });
         server.begin();
         started = true;
@@ -82,6 +88,9 @@ private:
     WebSendFn send;
     bool started;
     WebLogFn apiLog = nullptr;
+    bool otaAuthOk = false;
+    String otaError;
+    size_t otaBytes = 0;
 
     bool authed()
     {
@@ -395,6 +404,118 @@ private:
         d[ok ? "detail" : "error"] = hook.lastError();
         String out; serializeJson(d, out);
         server.send(ok ? 200 : 502, "application/json", out);
+    }
+
+    // ---- OTA -------------------------------------------------------------
+    //
+    // An unauthenticated firmware endpoint is remote code execution, so auth is
+    // checked at UPLOAD_FILE_START, before a single byte is accepted, and again
+    // in the completion handler. A failed or aborted update leaves the running
+    // partition untouched: Update writes to the inactive OTA slot and only
+    // switches the boot partition on a verified end().
+
+    void handleUpdateInfo()
+    {
+        if (!authed()) return;
+        StaticJsonDocument<384> d;
+        d["running"] = esp_ota_get_running_partition()->label;
+        d["sketchSize"] = ESP.getSketchSize();
+        d["sketchMD5"] = ESP.getSketchMD5();
+        d["freeSpace"] = ESP.getFreeSketchSpace();
+        d["canUpdate"] = (esp_ota_get_next_update_partition(NULL) != NULL);
+        String out; serializeJson(d, out);
+        server.send(200, "application/json", out);
+    }
+
+    void handleUpdateUpload()
+    {
+        HTTPUpload &up = server.upload();
+
+        if (up.status == UPLOAD_FILE_START)
+        {
+            otaAuthOk = server.authenticate("admin", config.security.adminPassword);
+            otaError = "";
+            otaBytes = 0;
+            if (!otaAuthOk) { otaError = "unauthorised"; return; }
+
+            if (esp_ota_get_next_update_partition(NULL) == NULL)
+            {
+                otaError = "no OTA partition available";
+                return;
+            }
+            if (apiLog) apiLog("ota start");
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN))
+            {
+                otaError = Update.errorString();
+                return;
+            }
+            // Optional integrity check: /api/update?md5=<32 hex>
+            if (server.hasArg("md5"))
+            {
+                String m = server.arg("md5");
+                if (m.length() == 32) Update.setMD5(m.c_str());
+            }
+        }
+        else if (up.status == UPLOAD_FILE_WRITE)
+        {
+            if (!otaAuthOk || otaError.length()) return;
+
+            // An ESP32 image starts 0xE9. Rejecting here turns "uploaded the
+            // wrong file" into an error instead of a bricked board.
+            if (otaBytes == 0 && up.currentSize > 0 && up.buf[0] != 0xE9)
+            {
+                otaError = "not an ESP32 firmware image (bad magic byte)";
+                Update.abort();
+                return;
+            }
+            if (Update.write(up.buf, up.currentSize) != up.currentSize)
+            {
+                otaError = Update.errorString();
+                Update.abort();
+                return;
+            }
+            otaBytes += up.currentSize;
+        }
+        else if (up.status == UPLOAD_FILE_END)
+        {
+            if (!otaAuthOk || otaError.length()) return;
+            if (!Update.end(true)) otaError = Update.errorString();
+        }
+        else if (up.status == UPLOAD_FILE_ABORTED)
+        {
+            Update.abort();
+            otaError = "upload aborted";
+        }
+    }
+
+    void handleUpdateDone()
+    {
+        if (!otaAuthOk)
+        {
+            server.requestAuthentication();
+            return;
+        }
+        StaticJsonDocument<256> d;
+        bool ok = (otaError.length() == 0 && otaBytes > 0);
+        d["ok"] = ok;
+        d["bytes"] = otaBytes;
+        if (!ok) d["error"] = otaError.length() ? otaError : String("no data received");
+        String out; serializeJson(d, out);
+
+        if (apiLog)
+        {
+            char b[160];
+            snprintf(b, sizeof(b), "ota %s bytes=%u %s", ok ? "ok" : "FAILED",
+                     (unsigned)otaBytes, ok ? "rebooting" : otaError.c_str());
+            apiLog(b);
+        }
+
+        server.send(ok ? 200 : 400, "application/json", out);
+        if (ok)
+        {
+            delay(600);      // let the response flush before the reboot
+            ESP.restart();
+        }
     }
 
     void handleTimeSync()
@@ -735,6 +856,19 @@ summary::-webkit-details-marker{opacity:.5}
       <div class="meta" id="whglobal" style="margin-top:.4rem"></div>
     </fieldset>
 
+    <fieldset><legend>Firmware <span class="meta">reboots on success</span></legend>
+      <div class="warn"><strong>Uploading the wrong image can leave the gateway unreachable</strong> and needing a USB cable. The upload goes to the inactive partition and only becomes active once fully verified, so an interrupted transfer is safe — a <em>complete but wrong</em> image is not. Use <code>firmware.bin</code> from <code>.pio/build/rak3112_mqtt/</code>.</div>
+      <div class="meta" id="fwinfo">&nbsp;</div>
+      <div class="row" style="margin-top:.5rem">
+        <div style="flex:2 1 18rem"><label>Firmware image (.bin)</label><input id="fwfile" type="file" accept=".bin"></div>
+        <button id="fwup" type="button">Upload &amp; reboot</button>
+      </div>
+      <div id="fwbar" style="display:none;margin-top:.5rem;height:.5rem;border-radius:.25rem;background:color-mix(in srgb,currentColor 15%,transparent)">
+        <div id="fwfill" style="height:100%;width:0;border-radius:.25rem;background:currentColor;opacity:.6"></div>
+      </div>
+      <div class="meta" id="fwstatus" style="margin-top:.35rem"></div>
+    </fieldset>
+
     <div class="row" style="margin-top:.75rem">
       <button id="cfgsave">Save settings</button>
       <button id="cfgrestart">Restart device</button>
@@ -858,6 +992,7 @@ g('cfgcard').addEventListener('toggle',async e=>{
     return;
   }
   if(cfgLoaded) return;
+  fwInfo();
   try{ fill(await (await fetch('/api/config')).json()); cfgLoaded=true;
        g('cfgnote').textContent=''; }
   catch(err){ g('cfgnote').textContent='failed to load' }
@@ -993,6 +1128,44 @@ function renderHooks(ws){
 function collectHooks(){
   return Array.from(document.querySelectorAll('#whlist > .card')).map(collectHook);
 }
+
+
+async function fwInfo(){
+  try{
+    const d=await (await fetch('/api/update')).json();
+    g('fwinfo').textContent='running '+d.running+' · sketch '+Math.round(d.sketchSize/1024)+
+      ' KB · free '+Math.round(d.freeSpace/1024)+' KB'+(d.canUpdate?'':' · NO OTA PARTITION');
+  }catch(e){ g('fwinfo').textContent=''; }
+}
+g('fwup').onclick=()=>{
+  const f=g('fwfile').files[0];
+  if(!f){ g('fwstatus').textContent='choose a .bin file first'; return; }
+  if(!confirm('Upload '+f.name+' ('+Math.round(f.size/1024)+' KB) and reboot?\n\nA wrong image can make the gateway unreachable until you connect a USB cable.')) return;
+
+  const fd=new FormData(); fd.append('firmware',f,f.name);
+  const xhr=new XMLHttpRequest();
+  xhr.open('POST','/api/update');
+  g('fwbar').style.display='block';
+  xhr.upload.onprogress=e=>{
+    if(!e.lengthComputable) return;
+    const pct=Math.round(e.loaded/e.total*100);
+    g('fwfill').style.width=pct+'%';
+    g('fwstatus').textContent='uploading '+pct+'%';
+  };
+  xhr.onload=()=>{
+    let r={}; try{ r=JSON.parse(xhr.responseText); }catch(e){}
+    if(xhr.status===200 && r.ok){
+      g('fwstatus').textContent='uploaded '+r.bytes+' bytes — rebooting, reload in ~20s';
+      g('fwfill').style.width='100%';
+    } else {
+      g('fwstatus').textContent='failed: '+(r.error||('HTTP '+xhr.status));
+      g('fwfill').style.width='0';
+    }
+  };
+  xhr.onerror=()=>{ g('fwstatus').textContent='upload failed (connection lost)'; };
+  g('fwstatus').textContent='starting upload...';
+  xhr.send(fd);
+};
 
 refresh(); setInterval(refresh,4000);
 </script></body></html>)HTML";
