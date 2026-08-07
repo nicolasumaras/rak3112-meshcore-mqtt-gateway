@@ -29,25 +29,44 @@ participant** with a web UI, not just an MQTT bridge:
 | Direct messages via ECDH, with ACK | ✅ verified |
 | `PATH` return so peers switch to direct routing | ✅ verified |
 | Password-protected web UI | ✅ verified |
-| Settings editable from the web UI (no USB needed) | ⚠️ untested |
-| HTTP API for messages and contacts | ⚠️ untested |
-| Outbound webhook for received messages | ⚠️ untested |
+| Settings editable from the web UI (no USB needed) | ✅ verified |
+| Outbound webhooks, up to 4 endpoints | ⚠️ partly — see below |
+| NTP clock sync, independent of MQTT TLS | ✅ verified |
 | Remote syslog + soak collector | ✅ verified |
+| HTTP API for messages, contacts, config | ⚠️ untested |
+| Remote firmware update (OTA) | ⚠️ untested |
 
 Browse to the gateway's IP, log in as `admin`, and you get a contact list, a
 message view, a send box for public or direct messages, "Announce me" to
-broadcast a signed advert, and a Settings panel covering LoRa, WiFi, MQTT,
-logging and location.
+broadcast a signed advert, and a Settings panel covering LoRa, node, WiFi, MQTT,
+clock, logging, webhooks and firmware upload — no USB cable required.
 
-The three ⚠️ rows are implemented and return the right thing unauthenticated
-(401), but the authenticated round-trip has not been exercised — that needs the
-operator's admin password.
+**On the ⚠️ rows.** Webhook delivery is verified in production: real pager
+traffic reaches a live endpoint and returns 200, with per-endpoint counters. What
+has not been exercised is endpoints 2–4, since only one was ever configured. The
+HTTP API and OTA both correctly refuse unauthenticated requests — OTA writes
+nothing to flash without auth — but no authenticated call has been made from
+this side, because that needs the operator's admin password.
+
+### Things worth knowing before you deploy it
+
+- **WiFi only runs when MQTT is enabled.** Inherited from upstream. Disabling
+  MQTT silently takes down the web UI, syslog and webhooks, and recovery needs a
+  cable. The UI now warns before letting you do it ([#18](../../issues/18)).
+- **The web UI is plain HTTP.** Credentials and message bodies cross the LAN
+  readable. Fine at home; put TLS in front of it otherwise.
+- **OTA is remote code execution by design.** Anyone who can authenticate can
+  replace the firmware. A wrong-but-valid image will flash and boot into
+  something unreachable — recovery is USB.
+- **DIRECT-routed packets are answered but not forwarded.** Relaying them needs
+  path-shuffling against our identity hash, which is not implemented. Flood
+  traffic repeats normally.
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| **[docs/API.md](docs/API.md)** | HTTP API — send messages, list contacts, register a webhook. Working `curl` examples. |
+| **[docs/API.md](docs/API.md)** | HTTP API — messages, contacts, webhooks, config, NTP, firmware update. Working `curl` examples. |
 | **[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md)** | Build, flash, first boot, failure triage, and the proven/unproven split |
 | **[docs/PORTING-PLAN.md](docs/PORTING-PLAN.md)** | The original port: findings, wire formats, phase breakdown |
 | **[docs/UPSTREAM-README.md](docs/UPSTREAM-README.md)** | jmead's original README, preserved verbatim |
@@ -74,15 +93,15 @@ curl $AUTH -X POST "$GW/api/messages" -H 'Content-Type: application/json' \
 
 # collect telemetry for a soak
 python3 tools/syslog_server.py --port 5514
+
+# update firmware over the network (no cable)
+curl $AUTH -X POST "$GW/api/update" \
+     -F "firmware=@.pio/build/rak3112_mqtt/firmware.bin"
 ```
 
 Serial menu highlights: `3` LoRa · `4` repeater/hops · `10` admin password
-(required for the web UI) · `16` remote logging. Radio, WiFi, MQTT and logging
+(required for the web UI) · `13` clock/NTP · `16` remote logging. Radio, WiFi, MQTT and logging
 changes all need a restart — they initialise once in `setup()`.
-
-**Known limitation:** DIRECT-routed packets are received and answered but not
-*forwarded*. Relaying them requires matching our identity hash against `path[0]`
-and shuffling the path, which is not implemented. Flood traffic repeats normally.
 
 ## Status
 
