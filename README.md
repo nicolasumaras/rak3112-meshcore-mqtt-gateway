@@ -105,53 +105,41 @@ changes all need a restart — they initialise once in `setup()`.
 
 ## Status
 
-**The radio works on real hardware.** Flashed to a RAK3112 (ESP32-S3 rev v0.2, 16 MB flash,
-8 MB PSRAM) and the SX1262 came up first try on the ported pin map:
+Running on real hardware against two LilyGo MeshCore pagers at 923.125 MHz /
+SF8 / CR4/8 / BW62.5.
 
 ```
-Initializing radio... success!
-✓ Radio listening for packets
+Initializing radio... success!        (MeshCore-compatible preamble: 32)
+Restored 3 MeshCore contact(s)
+✓ MeshCore web UI: http://<ip>
+hb uptime=1020 heap=246036 minheap=235332 maxblock=237556 contacts=3
 ```
 
-Transmit is confirmed too — the built-in `t` self-test sends successfully and the radio
-returns to RX.
+Verified in live use: packets received and repeated, public and direct messages
+both directions, ACK and `PATH` return (pagers switch to direct routing after
+the first exchange), contacts learned from signed adverts, mesh → MQTT and
+MQTT → mesh, and webhook delivery to a live endpoint returning 200.
 
-**MQTT → mesh is verified end to end.** With WiFi and MQTT configured, publishing to
-`{prefix}/commands/send` produces a real LoRa transmission:
+**What is still open** is in the ⚠️ rows above and the [issue tracker](../../issues):
+endpoints 2–4 of the multi-webhook support, the authenticated HTTP API and OTA
+paths, and the multi-day soak ([#13](../../issues/13)) — which needs elapsed
+time rather than work.
 
-```
-[serial] Forwarding MQTT message to LoRa (18 bytes)
-[serial] 📤 LoRa TX: 18 bytes  ✓ Sent successfully
-```
+### Bugs found upstream along the way
 
-That is the capability the port exists for — one RAK3112 repeating *and* bridging, with no
-external host.
+Bring-up turned up five defects in jmead's firmware, four of them
+board-independent and affecting every user:
 
-**Still unproven: anything requiring a second radio.** No other MeshCore node has been in
-range, so nothing has ever been received over the air (`packetsReceived: 0`). Mesh → MQTT is
-proven only for gateway-generated telemetry (`status`, `stats`, `neighbors`), not for a
-bridged LoRa packet. [#10](../../issues/10) and [#13](../../issues/13) remain open.
+| Issue | Impact |
+|---|---|
+| [#17](../../issues/17) Phantom zero-byte RX | Publishes an empty payload to the broker on every transmit |
+| Blind retransmission | Rebooted real pagers; would disrupt any mesh this firmware is near |
+| [#18](../../issues/18) Menu ejects on a stray keystroke | Config appears dead while being fine |
+| Unvalidated numeric ranges | Entering `256` silently becomes `0`, disabling the repeater |
+| [#21](../../issues/21) `/raw` injection accepted then dropped | Silent, no diagnostic |
 
-> **Restart after enabling MQTT.** `setup()` only builds the MQTT handler when MQTT is enabled
-> *at boot*, so enabling it at runtime silently does nothing — commands appear on the broker
-> and the gateway ignores them. The Save-time "quick test" misleads here, since it connects
-> over a separate code path. Details in [#12](../../issues/12).
-
-> **Mind what you publish.** The gateway's status payload includes its configured coordinates
-> and LAN IP. Harmless on a private broker; on a public one it is world-readable.
-> See [#19](../../issues/19).
-
-Bring-up also turned up a genuine **upstream** bug affecting all boards, not just this port —
-every transmit produced a phantom zero-byte receive, which with MQTT enabled would publish an
-empty payload to the broker on every transmitted or forwarded packet. Found, fixed and
-verified on hardware: [#17](../../issues/17).
-
-See [docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md#what-is-and-isnt-proven) for the full
-proven/unproven split.
-
-- **[docs/FLASHING-RAK3112.md](docs/FLASHING-RAK3112.md)** — build, flash, and failure triage
-- **[docs/PORTING-PLAN.md](docs/PORTING-PLAN.md)** — full plan and findings
-- **[Issues](../../issues)** — per-phase progress
+All fixed here with hardware evidence. [#14](../../issues/14) tracks offering
+them upstream — the retransmission fix is the one worth sending first and alone.
 
 ### Repo layout
 
